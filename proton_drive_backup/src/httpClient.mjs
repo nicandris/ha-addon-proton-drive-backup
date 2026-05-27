@@ -17,13 +17,31 @@ import { getSrp } from '@protontech/crypto/srp';
 const AUTH_API = 'https://account-api.proton.me';
 const DRIVE_HOST = 'drive-api.proton.me';
 
-// Identify this build honestly per the SDK's third-party guidelines.
-export const APP_VERSION = 'external-drive-home_assistant@0.1.0-alpha';
+// Identify this build honestly per the SDK's third-party guidelines: the name
+// is THIS third-party project, not "home_assistant" — we must not present the
+// request as coming from the Home Assistant project (or from Proton).
+export const APP_VERSION = 'external-drive-ha_addon_proton_drive_backup@0.1.0-alpha';
+
+// Honest, non-spoofing User-Agent. Some WAFs reject requests without one.
+const USER_AGENT = 'ha-addon-proton-drive-backup/0.1.x (+https://github.com/nicandris/ha-addon-proton-drive-backup)';
 
 const JSON_HEADERS = {
     'Content-Type': 'application/json',
     'x-pm-appversion': APP_VERSION,
+    'User-Agent': USER_AGENT,
 };
+
+// Build a readable description of a non-OK Proton API response: which endpoint,
+// the human message, Proton's Code, the HTTP status, and any Details (e.g. a
+// human-verification challenge), so failures can be diagnosed from the log/UI.
+function formatProtonError(path, json, status) {
+    let msg = json.Error || `${path} failed`;
+    msg += ` [${path} Code=${json.Code} HTTP=${status}]`;
+    if (json.Details && Object.keys(json.Details).length) {
+        msg += ` Details=${JSON.stringify(json.Details)}`;
+    }
+    return msg;
+}
 
 function authError(message) {
     return Object.assign(new Error(message), { code: 'AUTH_ERROR' });
@@ -54,6 +72,7 @@ export class HttpClient {
         const url = request.url.startsWith('http') ? request.url : `https://${request.url}`;
         const headers = new Headers(request.headers || {});
         headers.set('x-pm-appversion', APP_VERSION);
+        headers.set('User-Agent', USER_AGENT);
 
         const isDriveApi = url.includes(DRIVE_HOST);
         if (isDriveApi) {
@@ -124,9 +143,10 @@ export class HttpClient {
         }
         const json = await resp.json();
         if (!resp.ok || (json.Code !== 1000 && json.Code !== 1001)) {
-            throw Object.assign(new Error(json.Error || `${method} ${path} failed: ${resp.statusText}`), {
+            throw Object.assign(new Error(formatProtonError(path, json, resp.status)), {
                 protonCode: json.Code,
                 httpStatus: resp.status,
+                details: json.Details,
             });
         }
         return json;
@@ -154,9 +174,10 @@ export async function srpAuth(email, password) {
     });
     const info = await infoResp.json();
     if (info.Code !== 1000) {
-        throw Object.assign(authError(info.Error || 'Auth info failed'), {
+        throw Object.assign(authError(formatProtonError('auth/v4/info', info, infoResp.status)), {
             protonCode: info.Code,
             httpStatus: infoResp.status,
+            details: info.Details,
         });
     }
 
@@ -185,9 +206,10 @@ export async function srpAuth(email, password) {
 
     if (auth.Code === 8002 || auth.Code === 10013) throw authError('Invalid credentials');
     if (auth.Code !== 1000) {
-        throw Object.assign(new Error(auth.Error || 'Authentication failed'), {
+        throw Object.assign(new Error(formatProtonError('auth/v4', auth, authResp.status)), {
             protonCode: auth.Code,
             httpStatus: authResp.status,
+            details: auth.Details,
         });
     }
     if (auth.ServerProof !== srp.expectedServerProof) {
