@@ -11,7 +11,10 @@
 
 import { getSrp } from '@protontech/crypto/srp';
 
-const AUTH_API = 'https://api.proton.me';
+// Proton's account/auth + core API host. Note `api.proton.me` does NOT exist
+// (NXDOMAIN); the real hosts follow the `<service>-api.proton.me` pattern, the
+// same as the SDK's `drive-api.proton.me`.
+const AUTH_API = 'https://account-api.proton.me';
 const DRIVE_HOST = 'drive-api.proton.me';
 
 // Identify this build honestly per the SDK's third-party guidelines.
