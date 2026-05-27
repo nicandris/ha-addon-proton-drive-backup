@@ -124,7 +124,10 @@ export class HttpClient {
         }
         const json = await resp.json();
         if (!resp.ok || (json.Code !== 1000 && json.Code !== 1001)) {
-            throw new Error(`${method} ${path} failed: ${json.Error || resp.statusText} (${json.Code})`);
+            throw Object.assign(new Error(json.Error || `${method} ${path} failed: ${resp.statusText}`), {
+                protonCode: json.Code,
+                httpStatus: resp.status,
+            });
         }
         return json;
     }
@@ -150,7 +153,12 @@ export async function srpAuth(email, password) {
         body: JSON.stringify({ Username: email }),
     });
     const info = await infoResp.json();
-    if (info.Code !== 1000) throw authError(info.Error || 'Auth info failed');
+    if (info.Code !== 1000) {
+        throw Object.assign(authError(info.Error || 'Auth info failed'), {
+            protonCode: info.Code,
+            httpStatus: infoResp.status,
+        });
+    }
 
     const srp = await getSrp(
         {
@@ -176,7 +184,12 @@ export async function srpAuth(email, password) {
     const auth = await authResp.json();
 
     if (auth.Code === 8002 || auth.Code === 10013) throw authError('Invalid credentials');
-    if (auth.Code !== 1000) throw new Error(auth.Error || 'Authentication failed');
+    if (auth.Code !== 1000) {
+        throw Object.assign(new Error(auth.Error || 'Authentication failed'), {
+            protonCode: auth.Code,
+            httpStatus: authResp.status,
+        });
+    }
     if (auth.ServerProof !== srp.expectedServerProof) {
         throw authError('Server proof verification failed');
     }

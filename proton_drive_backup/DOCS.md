@@ -66,6 +66,21 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 - **Back up now** — trigger an immediate backup and upload.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
 - **Delete** — remove a backup from Proton Drive.
+- **Retry connection** — shown if login has halted (see below).
+
+### If login fails
+
+The app does **not** automatically retry a failed login. Repeatedly retrying
+(for example on every restart) can make Proton flag the account for "unusual
+activity" and temporarily lock it. Instead, after any login failure the app
+**halts** and shows the error in the Web UI with a **Retry connection** button.
+The halt persists across restarts, so nothing keeps hitting Proton in the
+background.
+
+Fix the underlying cause (wrong password, expired session, etc.), then click
+**Retry connection**. If the message says Proton has *temporarily limited* the
+account, sign in once at [account.proton.me](https://account.proton.me) from the
+same network to verify it, wait for the limit to clear, then retry.
 
 ## Security
 
