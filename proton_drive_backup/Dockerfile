@@ -9,5 +9,5 @@ RUN chmod a+x /run.sh
 LABEL \
   io.hassio.name="Proton Drive Backup" \
   io.hassio.type="addon" \
-  io.hassio.version="0.1.0"
+  io.hassio.version="0.1.1"
 CMD [ "/run.sh" ]
