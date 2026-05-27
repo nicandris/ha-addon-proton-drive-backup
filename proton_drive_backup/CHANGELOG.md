@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.4
+
+- The `x-pm-appversion` version is now taken from `package.json` at build time,
+  so it always matches the actual build instead of a stale hardcoded value.
+
 ## 0.1.3
 
 - **Fix app identification.** The `x-pm-appversion` name was `home_assistant`,
