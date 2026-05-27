@@ -19,8 +19,13 @@ const DRIVE_HOST = 'drive-api.proton.me';
 
 // Identify this build honestly per the SDK's third-party guidelines: the name
 // is THIS third-party project, not "home_assistant" — we must not present the
-// request as coming from the Home Assistant project (or from Proton).
-export const APP_VERSION = 'external-drive-ha_addon_proton_drive_backup@0.1.0-alpha';
+// request as coming from the Home Assistant project (or from Proton). The
+// version is injected from package.json at build time (see build.mjs) so it
+// always matches the actual build; the fallback is only for unbundled dev runs.
+export const APP_VERSION =
+    typeof __APP_VERSION__ !== 'undefined'
+        ? __APP_VERSION__
+        : 'external-drive-ha_addon_proton_drive_backup@0.0.0-dev';
 
 // Honest, non-spoofing User-Agent. Some WAFs reject requests without one.
 const USER_AGENT = 'ha-addon-proton-drive-backup/0.1.x (+https://github.com/nicandris/ha-addon-proton-drive-backup)';
