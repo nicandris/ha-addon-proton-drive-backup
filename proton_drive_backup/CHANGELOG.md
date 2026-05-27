@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3
+
+- **Fix app identification.** The `x-pm-appversion` name was `home_assistant`,
+  which misrepresented requests as coming from the Home Assistant project.
+  Changed to `ha_addon_proton_drive_backup` (this third-party project's own
+  name), per Proton's "identify your application honestly" rule.
+- Login errors now report Proton's response **code, HTTP status, and any
+  Details** (e.g. a human-verification challenge), not just the message — so a
+  block can be diagnosed from the log/UI.
+- Send an honest `User-Agent` header on all requests.
+
 ## 0.1.2
 
 - **Stop auto-retrying after a login failure.** Repeated automatic logins could
