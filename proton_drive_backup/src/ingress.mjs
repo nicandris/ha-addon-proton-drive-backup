@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 
 import * as proton from './protonClient.mjs';
 import * as orchestrator from './orchestrator.mjs';
-import { getAuthState, submitTwoFactorCode } from './protonAuth.mjs';
+import { getAuthState, submitTwoFactorCode, retryNow } from './protonAuth.mjs';
 
 function driveFolder() {
     return process.env.DRIVE_FOLDER || 'Home Assistant Backups';
@@ -54,13 +54,22 @@ async function buildStatus() {
             backupsError = err.message;
         }
     }
+    const statusLabel = auth.connected
+        ? 'connected'
+        : auth.needsTwoFactor
+          ? 'needs 2FA'
+          : auth.halted
+            ? 'halted'
+            : 'disconnected';
     return {
-        status: auth.connected ? 'connected' : auth.needsTwoFactor ? 'needs 2FA' : 'disconnected',
+        status: statusLabel,
         needsTwoFactor: auth.needsTwoFactor,
+        halted: auth.halted,
+        hardStop: auth.hardStop,
         email: auth.email,
         schedule: scheduleSummary(),
         lastSync: status.lastSync,
-        lastError: status.lastError || backupsError,
+        lastError: status.lastError || auth.lastError || backupsError,
         nextSyncEpoch: status.nextSyncEpoch,
         backups,
     };
@@ -94,6 +103,11 @@ function renderPage() {
 <body>
 <h1>Proton Drive Backup</h1>
 <div class="card" id="statusCard">Loading…</div>
+<div class="card" id="retryCard" style="display:none">
+  <h2 style="font-size:1.1rem">Connection halted</h2>
+  <p id="retryMsg" style="color:#666;margin:.25rem 0 .75rem"></p>
+  <button class="primary" id="retryBtn">Retry connection</button>
+</div>
 <div class="card" id="twoFactorCard" style="display:none">
   <h2 style="font-size:1.1rem">Two-factor authentication</h2>
   <p style="color:#666;margin:.25rem 0 .75rem">Enter the current 6-digit code from your authenticator app to connect.</p>
@@ -134,6 +148,8 @@ async function refresh() {
       '<div class="row"><span>Next sync</span><span>' + next + '</span></div>' +
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
     document.getElementById('twoFactorCard').style.display = s.needsTwoFactor ? 'block' : 'none';
+    document.getElementById('retryCard').style.display = s.halted ? 'block' : 'none';
+    if (s.halted) document.getElementById('retryMsg').textContent = s.lastError || 'Login failed.';
     var rows = (s.backups || []).slice().sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
     var tbody = document.getElementById('backupRows');
     if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
@@ -176,6 +192,16 @@ document.getElementById('twoFactorSubmit').onclick = async function(){
   refresh();
 };
 document.getElementById('twoFactorCode').addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('twoFactorSubmit').click(); });
+document.getElementById('retryBtn').onclick = async function(){
+  var btn = this; btn.disabled = true;
+  try {
+    var r = await fetch('api/retry', { method: 'POST' });
+    var j = await r.json();
+    if (!j.ok) alert('Error: ' + (j.error || 'unknown'));
+  } catch (e) { alert('Error: ' + e); }
+  btn.disabled = false;
+  refresh();
+};
 refresh();
 setInterval(refresh, 10000);
 </script>
@@ -212,6 +238,18 @@ async function handle(req, res) {
 
     if (method === 'GET' && path === '/api/status') {
         sendJson(res, 200, await buildStatus());
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/retry') {
+        // Clear the halt and attempt one login. NEEDS_2FA isn't an error — the
+        // status endpoint will reflect whatever state we land in.
+        retryNow()
+            .then(() => orchestrator.runSync())
+            .catch((err) => {
+                if (err.code !== 'NEEDS_2FA') console.error(`[ingress] retry: ${err.message}`);
+            });
+        sendJson(res, 200, { ok: true });
         return;
     }
 

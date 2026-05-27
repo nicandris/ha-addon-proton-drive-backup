@@ -30,12 +30,64 @@ let connected = false;
 let needsTwoFactor = false;
 let pendingSession = null; // { uid, accessToken, refreshToken } awaiting a 2FA code
 
+// Login halt. We do NOT auto-retry failed logins: repeatedly retrying SRP (e.g.
+// on every restart or schedule tick) can make Proton flag the account for
+// "unusual activity" and lock it. After any login failure we halt and stop
+// attempting until the user explicitly clicks "Retry connection". The halt is
+// persisted to disk so a restart/watchdog loop can't bypass it and keep hitting
+// Proton. (A 2FA prompt is NOT a failure and does not halt.)
+let authHalt = { halted: false, hardStop: false, lastError: null };
+let haltLoaded = false;
+
 function dataDir() {
     return process.env.DATA_DIR || '/data';
 }
 
 function sessionPath() {
     return join(dataDir(), 'session.json');
+}
+
+function haltPath() {
+    return join(dataDir(), 'auth_halt.json');
+}
+
+async function loadHalt() {
+    try {
+        authHalt = JSON.parse(await readFile(haltPath(), 'utf8'));
+    } catch {
+        // no file yet — keep defaults
+    }
+}
+
+async function persistHalt() {
+    try {
+        await mkdir(dirname(haltPath()), { recursive: true });
+        await writeFile(haltPath(), JSON.stringify(authHalt), 'utf8');
+    } catch (err) {
+        console.error(`[protonAuth] Failed to persist halt state: ${err.message}`);
+    }
+}
+
+async function clearHalt() {
+    authHalt = { halted: false, hardStop: false, lastError: null };
+    await persistHalt();
+}
+
+// A rate-limit / abuse-protection response from Proton — worth calling out so
+// the user knows to verify the account before retrying.
+function isRateLimited(err) {
+    if (err?.httpStatus === 429) return true;
+    const m = (err?.message || '').toLowerCase();
+    return (
+        m.includes('temporarily limited') ||
+        m.includes('unusual activity') ||
+        m.includes('too many')
+    );
+}
+
+async function haltOnAuthFailure(err) {
+    authHalt = { halted: true, hardStop: isRateLimited(err), lastError: err.message };
+    await persistHalt();
 }
 
 function needsTwoFactorError() {
@@ -144,6 +196,7 @@ async function completeLogin(session) {
     connected = true;
     needsTwoFactor = false;
     pendingSession = null;
+    await clearHalt();
     return sessionState;
 }
 
@@ -214,24 +267,67 @@ async function restorePersistedSession(persisted) {
 export async function ensureSession() {
     if (connected) return sessionState;
 
-    const persisted = await loadPersistedSession();
-    if (persisted && persisted.uid && persisted.keyPassword) {
-        try {
-            await restorePersistedSession(persisted);
-            return sessionState;
-        } catch (err) {
-            console.error(`[protonAuth] Session restore failed, re-authenticating: ${err.message}`);
-            connected = false;
-        }
+    // Already waiting for a 2FA code — don't run another SRP login on each sync
+    // tick (repeated logins can trip Proton's abuse protection).
+    if (needsTwoFactor) throw needsTwoFactorError();
+
+    if (!haltLoaded) {
+        await loadHalt();
+        haltLoaded = true;
+    }
+    // After a prior login failure we do not attempt again automatically; the
+    // user must clear the halt via retryNow() ("Retry connection" in the UI).
+    if (authHalt.halted) {
+        throw Object.assign(
+            new Error(
+                `Login halted after error: ${authHalt.lastError}. ` +
+                    (authHalt.hardStop
+                        ? 'Proton temporarily limited the account — sign in at account.proton.me to verify it, then click "Retry connection".'
+                        : 'Fix the issue, then click "Retry connection".'),
+            ),
+            { code: 'AUTH_HALTED' },
+        );
     }
 
-    return beginAuth();
+    try {
+        const persisted = await loadPersistedSession();
+        if (persisted && persisted.uid && persisted.keyPassword) {
+            try {
+                await restorePersistedSession(persisted);
+                await clearHalt();
+                return sessionState;
+            } catch (err) {
+                console.error(`[protonAuth] Session restore failed, re-authenticating: ${err.message}`);
+                connected = false;
+            }
+        }
+        return await beginAuth();
+    } catch (err) {
+        // A 2FA prompt is an expected pause, not a failure — keep running so the
+        // user can enter a code. Everything else halts auto-attempts.
+        if (err.code === 'NEEDS_2FA') throw err;
+        await haltOnAuthFailure(err);
+        throw err;
+    }
+}
+
+/**
+ * Manually clear a halt and attempt to connect once. Triggered by the user from
+ * the web UI after they've fixed credentials or verified the account.
+ */
+export async function retryNow() {
+    await clearHalt();
+    haltLoaded = true;
+    return ensureSession();
 }
 
 export function getAuthState() {
     return {
         connected,
         needsTwoFactor,
+        halted: authHalt.halted,
+        hardStop: authHalt.hardStop,
+        lastError: authHalt.lastError,
         email: sessionState?.email || process.env.PROTON_EMAIL || null,
     };
 }
