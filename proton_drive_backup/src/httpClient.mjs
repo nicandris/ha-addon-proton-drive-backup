@@ -15,7 +15,7 @@ const AUTH_API = 'https://api.proton.me';
 const DRIVE_HOST = 'drive-api.proton.me';
 
 // Identify this build honestly per the SDK's third-party guidelines.
-export const APP_VERSION = 'external-drive-home_assistant@1.0.0-alpha';
+export const APP_VERSION = 'external-drive-home_assistant@0.1.0-alpha';
 
 const JSON_HEADERS = {
     'Content-Type': 'application/json',

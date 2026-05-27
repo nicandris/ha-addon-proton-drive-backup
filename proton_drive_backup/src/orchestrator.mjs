@@ -16,6 +16,19 @@ import { ensureSession } from './protonAuth.mjs';
 
 const ADDON_BACKUP_PREFIX = 'Proton Drive Backup';
 
+// Node's fetch throws a bare "fetch failed" and stashes the real network error
+// (DNS, connection refused, TLS, etc.) on err.cause — surface it so failures
+// are actually diagnosable.
+function describeError(err) {
+    let msg = err?.message || String(err);
+    const cause = err?.cause;
+    if (cause) {
+        const detail = cause.code || cause.message || (typeof cause === 'string' ? cause : '');
+        if (detail && !msg.includes(detail)) msg += ` (cause: ${detail})`;
+    }
+    return msg;
+}
+
 const state = {
     lastSync: null, // ISO string of last successful sync
     lastError: null, // string
@@ -80,7 +93,7 @@ async function syncBackupsToProton() {
                 driveFolder,
             );
         } catch (err) {
-            state.lastError = `Upload of ${ha.slug} failed: ${err.message}`;
+            state.lastError = `Upload of ${ha.slug} failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
         } finally {
             await rm(tmpPath, { force: true }).catch(() => {});
@@ -103,7 +116,7 @@ export async function pruneProton() {
             console.log(`[orchestrator] Pruning Proton backup ${b.metadata?.slug || b.linkId}`);
             await proton.deleteBackup(b.linkId);
         } catch (err) {
-            state.lastError = `Proton prune failed: ${err.message}`;
+            state.lastError = `Proton prune failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
         }
     }
@@ -124,7 +137,7 @@ export async function pruneHA() {
             console.log(`[orchestrator] Pruning HA backup ${b.slug} (${b.name})`);
             await supervisor.deleteBackup(b.slug);
         } catch (err) {
-            state.lastError = `HA prune failed: ${err.message}`;
+            state.lastError = `HA prune failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
         }
     }
@@ -142,7 +155,7 @@ export async function runSync() {
             try {
                 await supervisor.createBackup({ name, password: backupPassword, full: fullBackup });
             } catch (err) {
-                state.lastError = `Backup creation failed: ${err.message}`;
+                state.lastError = `Backup creation failed: ${describeError(err)}`;
                 console.error(`[orchestrator] ${state.lastError}`);
             }
         }
@@ -154,8 +167,8 @@ export async function runSync() {
         state.lastSync = new Date().toISOString();
         console.log(`[orchestrator] Sync complete at ${state.lastSync}`);
     } catch (err) {
-        state.lastError = err.message;
-        console.error(`[orchestrator] Sync failed: ${err.message}`);
+        state.lastError = describeError(err);
+        console.error(`[orchestrator] Sync failed: ${state.lastError}`);
     }
 }
 
