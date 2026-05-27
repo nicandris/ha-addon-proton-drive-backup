@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.2
+
+- **Stop auto-retrying after a login failure.** Repeated automatic logins could
+  trip Proton's abuse protection and temporarily lock the account. Now, after
+  any login failure the app **halts** and stops attempting until you click
+  **Retry connection** in the web UI. The halt persists across restarts, so a
+  restart/watchdog loop can't keep hammering Proton.
+- Rate-limit / "unusual activity" responses are flagged specifically, with a
+  prompt to verify the account at account.proton.me before retrying.
+
 ## 0.1.1
 
 - **Fix: logins failed with `fetch failed (cause: ENOTFOUND)`.** The auth/core
