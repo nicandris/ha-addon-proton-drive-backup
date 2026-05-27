@@ -1,0 +1,27 @@
+# Python (vestigial — this project began as a Python integration)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Node — node_modules and the built bundle (dist/) are produced inside the
+# Docker image at build time, so neither is committed.
+proton_drive_backup/node_modules/
+proton_drive_backup/dist/
+
+# Add-on runtime data / secrets — never commit.
+**/session.json
+data/
+
+# IDE / editor
+.idea/
+*.iml
+.junie/
+out/
+
+# OS
+.DS_Store

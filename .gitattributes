@@ -1,0 +1,7 @@
+# This add-on runs in a Linux container; keep LF endings so shell scripts and
+# the Node bundle aren't corrupted by CRLF on Windows checkouts.
+* text=auto eol=lf
+*.sh text eol=lf
+*.mjs text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
