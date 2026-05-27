@@ -62,7 +62,7 @@ The Proton Drive SDK only performs Drive operations once handed an authenticated
 3. `completeLogin()` derives the key password (`computeKeyPassword`), builds the account (imports address keys), and inits the client.
 4. Session persisted to `${DATA_DIR}/session.json`, **encrypted at rest** with AES-256-GCM. The key is derived (scrypt) from the Proton password at runtime and never written to disk. `loadPersistedSession` transparently migrates a legacy plaintext file. Token refresh on 401 rotates and re-persists tokens, so restarts don't re-prompt for 2FA.
 
-`x-pm-appversion` is `external-drive-home_assistant@1.0.0-alpha` (required by the SDK README for third-party clients; must not spoof first-party apps).
+`x-pm-appversion` is `external-drive-home_assistant@0.1.0-alpha` (required by the SDK README for third-party clients; must not spoof first-party apps).
 
 ## Gotchas
 
