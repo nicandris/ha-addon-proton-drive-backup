@@ -1,5 +1,15 @@
 # Proton Drive Backup
 
+> ⚠️ **Pre-release warning — risk of account blocks.** Proton's Drive SDK is
+> in alpha and Proton has not opened third-party authentication. Brand-new
+> Proton accounts have been blocked on the **first** login attempt with HTTP
+> 422 `Code 2028` (Sentinel hard block — no CAPTCHA, no client-side fix).
+> Clearing it requires waiting and/or appealing at
+> [proton.me/support/appeal-abuse](https://proton.me/support/appeal-abuse).
+> Use only with a Proton account you can afford to have temporarily blocked.
+> Likely to improve once Proton officially releases the SDK for third-party
+> use (~late 2026 / early 2027).
+
 This app automatically backs up your Home Assistant instance to
 [Proton Drive](https://proton.me/drive). It runs entirely inside a single
 container: it asks the Supervisor to create backups, then uploads them to your
