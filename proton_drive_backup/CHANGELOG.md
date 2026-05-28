@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.7
+
+- The version now lives in **one place**: `config.yaml`. `build.mjs` reads it
+  from there to inject into `x-pm-appversion`. Removed the redundant copies in
+  `package.json` and the `Dockerfile` LABEL. To bump the version, edit only
+  `config.yaml`.
+
 ## 0.1.6
 
 - HumanVerification iframe now uses Proton's exact `postMessage` protocol
