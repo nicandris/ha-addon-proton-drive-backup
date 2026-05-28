@@ -336,13 +336,18 @@ The SDK README imposes rules on third-party clients; non-compliant clients
 
 ## 15. Known limitations & gotchas
 
-- **Proton "unusual activity" block on first login.** Seen on a brand-new
-  account, first attempt — i.e. not retry volume. Likely IP reputation, new-
-  account human verification, or Proton gating third-party auth. Check the
-  `Code` in the error: `9001` = human verification (would need a CAPTCHA flow in
-  the UI — not yet built); a hard abuse code likely needs Proton's appeal or
-  means third-party auth isn't open yet. The SDK is explicitly "not ready for
-  third-party production use."
+- **Proton Sentinel `Code 2028` ("unusual activity") block.** Observed on a
+  brand-new account, first attempt — confirmed in live testing as
+  `HTTP 422 Code 2028` with **no `Details` block**. This is Proton's hard
+  Sentinel path and **has no client-side workaround**: no CAPTCHA, no token to
+  solve. Clearing it requires waiting and/or filing an appeal at
+  [proton.me/support/appeal-abuse](https://proton.me/support/appeal-abuse).
+  Likely tied to source-IP heuristics + Proton not having opened third-party
+  auth yet (the SDK README states it is "not yet ready for third-party
+  production use"). The repo's top-level README carries a prominent warning.
+- **Proton HumanVerification `Code 9001`.** Recoverable: handled by the HV flow
+  added in 0.1.5 (verify.proton.me iframe + token retry). If Proton returns
+  9001 after the 2028 block lifts, the UI presents the challenge automatically.
 - **"Back up now" with automatic backups disabled.** `runSync` only *creates* a
   new HA backup when `BACKUP_INTERVAL_HOURS > 0`; with auto disabled it just
   syncs/prunes existing backups. Triggering a fresh backup from the UI while
@@ -361,7 +366,8 @@ The SDK README imposes rules on third-party clients; non-compliant clients
 | --- | --- |
 | `fetch failed (cause: ENOTFOUND)` | DNS — usually a wrong host. Auth host must be `account-api.proton.me` (not `api.proton.me`). |
 | `fetch failed (cause: ECONNREFUSED/ETIMEDOUT)` | Network/firewall/IPv6 from the container. |
-| `… unusual activity … temporarily limited …` | Proton abuse/verification. Verify at account.proton.me, wait, then **Retry connection**. Check the `Code`. |
+| `… unusual activity …` + `Code 2028` | Sentinel hard block — no client-side fix. Stop the app, wait, try a different network, and/or appeal at proton.me/support/appeal-abuse. |
+| `Code 9001` + `Details` containing `HumanVerificationToken` | HumanVerification — the UI's iframe will appear automatically; solve the challenge and login resumes. |
 | `Invalid credentials` (`8002`/`10013`) | Wrong email/password. |
 | Status `halted` | A prior login failed; the app stopped auto-retrying. Fix cause, click **Retry connection**. |
 | Status `needs 2FA` | Enter the 6-digit code in the UI. |
