@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.5
+
+- **Handle Proton's HumanVerification challenge (Code 9001).** When Proton asks
+  for a one-time human verification (common for new accounts or unrecognized
+  clients), the web UI now embeds `verify.proton.me` in an iframe, captures the
+  solved token via `postMessage`, and retries the login with the
+  `x-pm-human-verification-token` headers. Status `needs verification` appears
+  in the UI; sync resumes automatically once the challenge is solved.
+- Note: this does **not** unblock a hard `Code 2028` Sentinel block — that path
+  needs a Proton support appeal.
+
 ## 0.1.4
 
 - The `x-pm-appversion` version is now taken from `package.json` at build time,
