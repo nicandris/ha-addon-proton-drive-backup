@@ -1,9 +1,13 @@
 import { build } from 'esbuild';
 import { readFileSync } from 'node:fs';
 
-// Single source of truth for the version: package.json. Inlined at build time
-// so x-pm-appversion always matches the actual build and can't drift.
-const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8'));
+// Single source of truth for the version: config.yaml (the value HA actually
+// reads). Inlined here at build time so x-pm-appversion always matches the
+// shipped version. To bump the version, edit ONLY config.yaml's `version:`.
+const cfg = readFileSync(new URL('./config.yaml', import.meta.url), 'utf8');
+const match = cfg.match(/^version:\s*["']?([^"'\s]+)["']?\s*$/m);
+if (!match) throw new Error('Could not parse `version:` from config.yaml');
+const version = match[1];
 const appVersion = `external-drive-ha_addon_proton_drive_backup@${version}-alpha`;
 
 await build({

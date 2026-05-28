@@ -289,10 +289,13 @@ Env vars: `PROTON_EMAIL`, `PROTON_PASSWORD`, `DRIVE_FOLDER`,
 
 ## 12. Versioning & release
 
-`package.json` `version` is the **single source of truth** (the appversion
-derives from it). On each release bump it in lockstep in three places:
-`config.yaml` `version:`, `Dockerfile` `io.hassio.version`, and `package.json`,
-add a `CHANGELOG.md` entry, rebuild, commit, push.
+**The version lives in exactly one place: `proton_drive_backup/config.yaml`'s
+`version:` field.** `build.mjs` reads it and injects it into the bundle for
+`x-pm-appversion`. `package.json` has no `version` field; the `Dockerfile` has
+no `io.hassio.version` LABEL — both were redundant copies and were removed.
+
+To release: edit `config.yaml`'s `version:`, add a `CHANGELOG.md` entry,
+rebuild, commit, push.
 
 ⚠️ **HA only offers an update when the version increases.** Going *backwards*
 (we once went 1.0.0 → 0.1.0) means HA won't show an update — the user must
