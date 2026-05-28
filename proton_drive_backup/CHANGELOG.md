@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.8
+
+- **Fix Docker build failure (`ENOENT /app/config.yaml`)** introduced in 0.1.7:
+  `build.mjs` reads the version from `config.yaml`, but the Dockerfile wasn't
+  copying that file into the build context. Added `config.yaml` to the COPY
+  line so HA can rebuild the image.
+
 ## 0.1.7
 
 - The version now lives in **one place**: `config.yaml`. `build.mjs` reads it
