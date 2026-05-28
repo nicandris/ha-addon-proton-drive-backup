@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.6
+
+- HumanVerification iframe now uses Proton's exact `postMessage` protocol
+  (verified against the ProtonMail/WebClients `applications/verify` source):
+  strict origin + same-iframe checks, `embed=true` so the iframe sends RESIZE
+  events, and handling for `LOADED` / `RESIZE` / `HUMAN_VERIFICATION_SUCCESS` /
+  `CLOSE` / `ERROR` envelopes.
+
 ## 0.1.5
 
 - **Handle Proton's HumanVerification challenge (Code 9001).** When Proton asks

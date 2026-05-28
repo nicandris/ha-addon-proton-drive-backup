@@ -168,7 +168,10 @@ async function refresh() {
     var hvFrame = document.getElementById('hvFrame');
     if (s.needsHumanVerification && s.hvWebUrl) {
       hvCard.style.display = 'block';
-      if (hvFrame.getAttribute('src') !== s.hvWebUrl) hvFrame.setAttribute('src', s.hvWebUrl);
+      // verify.proton.me sends RESIZE postMessages only when embed=true is
+      // passed; we also need it so the captcha lays out for an iframe context.
+      var src = s.hvWebUrl + (s.hvWebUrl.indexOf('?') === -1 ? '?' : '&') + 'embed=true';
+      if (hvFrame.getAttribute('src') !== src) hvFrame.setAttribute('src', src);
     } else {
       hvCard.style.display = 'none';
       hvFrame.removeAttribute('src');
@@ -215,23 +218,41 @@ document.getElementById('twoFactorSubmit').onclick = async function(){
   refresh();
 };
 document.getElementById('twoFactorCode').addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('twoFactorSubmit').click(); });
-// Listen for verify.proton.me postMessage with the solved HumanVerification
-// token. The exact shape Proton uses is verified against their WebClients
-// source; we also dig through common nested envelopes defensively.
+// Listen for verify.proton.me postMessage events.
+// Protocol (confirmed against ProtonMail/WebClients applications/verify/src/app/broadcast.ts):
+//   { type: 'LOADED' }                                       - boot, no reply
+//   { type: 'RESIZE',  payload: { height } }                 - resize iframe
+//   { type: 'HUMAN_VERIFICATION_SUCCESS',
+//                      payload: { token, type } }            - token solved
+//   { type: 'NOTIFICATION', payload: { type, text } }        - inline message
+//   { type: 'CLOSE' }                                        - user dismissed
+//   { type: 'ERROR',   payload: GenericErrorPayload }        - verify failed
 window.addEventListener('message', async function(ev){
   try {
-    if (!ev.origin || ev.origin.indexOf('verify.proton.me') === -1) return;
-    var d = ev.data || {};
-    // Common shapes Proton's verify uses: { token, type } at top level, or
-    // wrapped in { payload: {...} } / { message: {...} }.
-    var payload = d.payload || d.message || d;
-    var token = payload.token || payload.HumanVerificationToken;
-    var type  = payload.type  || payload.tokenType || payload.HumanVerificationType || 'captcha';
-    // Sometimes Proton uses {type:'pm.verification.success', ...} as an outer
-    // event name and the token lives inside; surface for debugging.
-    console.log('[hv-iframe]', ev.origin, d);
-    if (!token) return;
+    if (ev.origin !== 'https://verify.proton.me') return;
+    var hvFrame = document.getElementById('hvFrame');
+    if (!hvFrame || ev.source !== hvFrame.contentWindow) return;
+    var msg = ev.data;
+    if (!msg || typeof msg !== 'object') return;
     var errEl = document.getElementById('hvError');
+
+    if (msg.type === 'RESIZE' && msg.payload && msg.payload.height) {
+      hvFrame.style.height = (msg.payload.height + 8) + 'px';
+      return;
+    }
+    if (msg.type === 'CLOSE') {
+      errEl.textContent = 'Verification cancelled — refresh and try again to get a new challenge.';
+      return;
+    }
+    if (msg.type === 'ERROR') {
+      errEl.textContent = (msg.payload && (msg.payload.text || msg.payload.message)) || 'Verification error';
+      return;
+    }
+    if (msg.type !== 'HUMAN_VERIFICATION_SUCCESS') return;
+
+    var token = msg.payload && msg.payload.token;
+    var type  = (msg.payload && msg.payload.type) || 'captcha';
+    if (!token) return;
     errEl.textContent = '';
     try {
       var r = await fetch('api/human-verify', {
