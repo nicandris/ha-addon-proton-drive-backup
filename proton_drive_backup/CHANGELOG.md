@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.9
+
+- **Honest halt messages.** Previously the halt message always said "sign in
+  at account.proton.me to verify it" even when Proton returned `Code 2028`
+  (Sentinel block), which has no in-web verification. The web UI's halt card
+  now shows the underlying Proton error on one line and a code-specific action
+  line on the next: for `2028` it advises waiting / different network / the
+  appeal form; for other rate-limit responses it points at the web sign-in
+  verification step; for everything else it just says "fix the issue".
+
 ## 0.1.8
 
 - **Fix Docker build failure (`ENOENT /app/config.yaml`)** introduced in 0.1.7:

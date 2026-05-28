@@ -71,6 +71,7 @@ async function buildStatus() {
         hvWebUrl: auth.hvWebUrl,
         halted: auth.halted,
         hardStop: auth.hardStop,
+        haltAdvice: auth.haltAdvice,
         email: auth.email,
         schedule: scheduleSummary(),
         lastSync: status.lastSync,
@@ -110,7 +111,8 @@ function renderPage() {
 <div class="card" id="statusCard">Loading…</div>
 <div class="card" id="retryCard" style="display:none">
   <h2 style="font-size:1.1rem">Connection halted</h2>
-  <p id="retryMsg" style="color:#666;margin:.25rem 0 .75rem"></p>
+  <p id="retryMsg" style="color:#666;margin:.25rem 0 .25rem;white-space:pre-wrap;word-break:break-word"></p>
+  <p id="retryAdvice" style="color:#1c1c1c;margin:.5rem 0 .75rem;white-space:pre-wrap"></p>
   <button class="primary" id="retryBtn">Retry connection</button>
 </div>
 <div class="card" id="hvCard" style="display:none">
@@ -163,7 +165,10 @@ async function refresh() {
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
     document.getElementById('twoFactorCard').style.display = s.needsTwoFactor ? 'block' : 'none';
     document.getElementById('retryCard').style.display = s.halted ? 'block' : 'none';
-    if (s.halted) document.getElementById('retryMsg').textContent = s.lastError || 'Login failed.';
+    if (s.halted) {
+      document.getElementById('retryMsg').textContent = s.lastError || 'Login failed.';
+      document.getElementById('retryAdvice').textContent = s.haltAdvice || '';
+    }
     var hvCard = document.getElementById('hvCard');
     var hvFrame = document.getElementById('hvFrame');
     if (s.needsHumanVerification && s.hvWebUrl) {
