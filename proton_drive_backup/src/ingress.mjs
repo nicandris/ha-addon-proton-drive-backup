@@ -10,7 +10,7 @@ import { createServer } from 'node:http';
 
 import * as proton from './protonClient.mjs';
 import * as orchestrator from './orchestrator.mjs';
-import { getAuthState, submitTwoFactorCode, retryNow } from './protonAuth.mjs';
+import { getAuthState, submitTwoFactorCode, submitHumanVerification, retryNow } from './protonAuth.mjs';
 
 function driveFolder() {
     return process.env.DRIVE_FOLDER || 'Home Assistant Backups';
@@ -56,14 +56,19 @@ async function buildStatus() {
     }
     const statusLabel = auth.connected
         ? 'connected'
-        : auth.needsTwoFactor
-          ? 'needs 2FA'
-          : auth.halted
-            ? 'halted'
-            : 'disconnected';
+        : auth.needsHumanVerification
+          ? 'needs verification'
+          : auth.needsTwoFactor
+            ? 'needs 2FA'
+            : auth.halted
+              ? 'halted'
+              : 'disconnected';
     return {
         status: statusLabel,
         needsTwoFactor: auth.needsTwoFactor,
+        needsHumanVerification: auth.needsHumanVerification,
+        hvMethods: auth.hvMethods,
+        hvWebUrl: auth.hvWebUrl,
         halted: auth.halted,
         hardStop: auth.hardStop,
         email: auth.email,
@@ -108,6 +113,15 @@ function renderPage() {
   <p id="retryMsg" style="color:#666;margin:.25rem 0 .75rem"></p>
   <button class="primary" id="retryBtn">Retry connection</button>
 </div>
+<div class="card" id="hvCard" style="display:none">
+  <h2 style="font-size:1.1rem">Human verification</h2>
+  <p style="color:#666;margin:.25rem 0 .5rem">
+    Proton is asking for a one-time verification. Complete the challenge below
+    and we'll continue signing in automatically.
+  </p>
+  <iframe id="hvFrame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox" style="width:100%;min-height:420px;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe>
+  <div class="err" id="hvError" style="margin-top:.5rem"></div>
+</div>
 <div class="card" id="twoFactorCard" style="display:none">
   <h2 style="font-size:1.1rem">Two-factor authentication</h2>
   <p style="color:#666;margin:.25rem 0 .75rem">Enter the current 6-digit code from your authenticator app to connect.</p>
@@ -150,6 +164,15 @@ async function refresh() {
     document.getElementById('twoFactorCard').style.display = s.needsTwoFactor ? 'block' : 'none';
     document.getElementById('retryCard').style.display = s.halted ? 'block' : 'none';
     if (s.halted) document.getElementById('retryMsg').textContent = s.lastError || 'Login failed.';
+    var hvCard = document.getElementById('hvCard');
+    var hvFrame = document.getElementById('hvFrame');
+    if (s.needsHumanVerification && s.hvWebUrl) {
+      hvCard.style.display = 'block';
+      if (hvFrame.getAttribute('src') !== s.hvWebUrl) hvFrame.setAttribute('src', s.hvWebUrl);
+    } else {
+      hvCard.style.display = 'none';
+      hvFrame.removeAttribute('src');
+    }
     var rows = (s.backups || []).slice().sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
     var tbody = document.getElementById('backupRows');
     if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
@@ -192,6 +215,36 @@ document.getElementById('twoFactorSubmit').onclick = async function(){
   refresh();
 };
 document.getElementById('twoFactorCode').addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('twoFactorSubmit').click(); });
+// Listen for verify.proton.me postMessage with the solved HumanVerification
+// token. The exact shape Proton uses is verified against their WebClients
+// source; we also dig through common nested envelopes defensively.
+window.addEventListener('message', async function(ev){
+  try {
+    if (!ev.origin || ev.origin.indexOf('verify.proton.me') === -1) return;
+    var d = ev.data || {};
+    // Common shapes Proton's verify uses: { token, type } at top level, or
+    // wrapped in { payload: {...} } / { message: {...} }.
+    var payload = d.payload || d.message || d;
+    var token = payload.token || payload.HumanVerificationToken;
+    var type  = payload.type  || payload.tokenType || payload.HumanVerificationType || 'captcha';
+    // Sometimes Proton uses {type:'pm.verification.success', ...} as an outer
+    // event name and the token lives inside; surface for debugging.
+    console.log('[hv-iframe]', ev.origin, d);
+    if (!token) return;
+    var errEl = document.getElementById('hvError');
+    errEl.textContent = '';
+    try {
+      var r = await fetch('api/human-verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token, type: type }),
+      });
+      var j = await r.json();
+      if (!j.ok) { errEl.textContent = j.error || 'Verification failed'; return; }
+    } catch (e) { errEl.textContent = String(e); return; }
+    refresh();
+  } catch (e) { /* never let a stray message break the UI */ }
+});
 document.getElementById('retryBtn').onclick = async function(){
   var btn = this; btn.disabled = true;
   try {
@@ -250,6 +303,28 @@ async function handle(req, res) {
                 if (err.code !== 'NEEDS_2FA') console.error(`[ingress] retry: ${err.message}`);
             });
         sendJson(res, 200, { ok: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/human-verify') {
+        const body = await readBody(req);
+        const token = (body.token || '').toString().trim();
+        const type = (body.type || 'captcha').toString().trim();
+        if (!token) return sendJson(res, 400, { ok: false, error: 'token required' });
+        try {
+            await submitHumanVerification(token, type);
+            // Connected (or now in 2FA pending) — kick off a sync if connected.
+            orchestrator.runSync().catch((err) => console.error(`[ingress] post-hv sync: ${err.message}`));
+            sendJson(res, 200, { ok: true });
+        } catch (err) {
+            // NEEDS_2FA after solving HV is normal — surface via status, not as
+            // an error to the caller.
+            if (err.code === 'NEEDS_2FA' || err.code === 'NEEDS_HV') {
+                sendJson(res, 200, { ok: true });
+            } else {
+                sendJson(res, 500, { ok: false, error: err.message });
+            }
+        }
         return;
     }
 
