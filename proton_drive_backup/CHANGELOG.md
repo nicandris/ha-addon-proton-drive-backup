@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.10
+
+- **Add prominent warning** at the top of the repo README, app README, and
+  DOCS about the risk of Proton blocking third-party authentication (Code
+  2028) — most likely until Proton officially releases the Drive SDK for
+  third-party use.
+
 ## 0.1.9
 
 - **Honest halt messages.** Previously the halt message always said "sign in

@@ -4,6 +4,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 > **For the full reference, read [`DEVELOPMENT.md`](./DEVELOPMENT.md)** — module-by-module breakdown, the complete auth flow and its sharp edges, the Proton SDK/Supervisor integrations, build/versioning/deploy details, Proton compliance status, and a troubleshooting map. This file is the quick summary; `DEVELOPMENT.md` is the long form.
 
+> ⚠️ **Project status: alpha, blocked by Proton third-party auth gating.** Live testing showed brand-new accounts being blocked on the first SRP login with `HTTP 422 Code 2028` (Proton Sentinel — no `Details`, no CAPTCHA, no client-side fix). The SDK README states it is "not yet ready for third-party production use" and auth is out of its scope. `Code 9001` (HumanVerification) **is** handled (0.1.5+); `Code 2028` requires user action outside the app (appeal / wait / different IP). The repo's user-facing READMEs and `DOCS.md` carry a prominent warning. Do not assume "fix the auth code" can resolve a 2028 — it can't.
+
 ## What this is
 
 A **Home Assistant add-on** (not a custom integration) that backs up Home Assistant to Proton Drive. It is a standalone Node.js app shipped as a Docker container managed by the HA Supervisor. There is no companion Python integration — the old `custom_components/` Python/subprocess-bridge approach was removed.
