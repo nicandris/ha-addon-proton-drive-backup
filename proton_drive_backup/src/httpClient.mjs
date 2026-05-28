@@ -167,17 +167,42 @@ export class HttpClient {
 }
 
 /**
+ * Build an Error representing a HumanVerification (Code 9001) challenge so the
+ * caller can pause, prompt the user to solve it, and retry with the resulting
+ * token via the `hv` argument to srpAuth.
+ */
+function hvRequiredError(stage, json, status) {
+    return Object.assign(authError(formatProtonError(stage, json, status)), {
+        code: 'HV_REQUIRED',
+        protonCode: 9001,
+        httpStatus: status,
+        details: json.Details || {},
+    });
+}
+
+/**
  * Perform the SRP login flow and return a session + the account's 2FA info.
  *
+ * @param {string} email
+ * @param {string} password
+ * @param {?{token:string,type:string}} hv - optional HumanVerification headers
+ *   to send on retry after the user solves a Code 9001 challenge.
  * @returns {{ session: {uid,accessToken,refreshToken}, twoFactor: object }}
  */
-export async function srpAuth(email, password) {
+export async function srpAuth(email, password, hv = null) {
+    const headers = { ...JSON_HEADERS };
+    if (hv?.token && hv?.type) {
+        headers['x-pm-human-verification-token'] = hv.token;
+        headers['x-pm-human-verification-token-type'] = hv.type;
+    }
+
     const infoResp = await fetch(`${AUTH_API}/auth/v4/info`, {
         method: 'POST',
-        headers: JSON_HEADERS,
+        headers,
         body: JSON.stringify({ Username: email }),
     });
     const info = await infoResp.json();
+    if (info.Code === 9001) throw hvRequiredError('auth/v4/info', info, infoResp.status);
     if (info.Code !== 1000) {
         throw Object.assign(authError(formatProtonError('auth/v4/info', info, infoResp.status)), {
             protonCode: info.Code,
@@ -199,7 +224,7 @@ export async function srpAuth(email, password) {
 
     const authResp = await fetch(`${AUTH_API}/auth/v4`, {
         method: 'POST',
-        headers: JSON_HEADERS,
+        headers,
         body: JSON.stringify({
             Username: email,
             ClientEphemeral: srp.clientEphemeral,
@@ -209,6 +234,7 @@ export async function srpAuth(email, password) {
     });
     const auth = await authResp.json();
 
+    if (auth.Code === 9001) throw hvRequiredError('auth/v4', auth, authResp.status);
     if (auth.Code === 8002 || auth.Code === 10013) throw authError('Invalid credentials');
     if (auth.Code !== 1000) {
         throw Object.assign(new Error(formatProtonError('auth/v4', auth, authResp.status)), {

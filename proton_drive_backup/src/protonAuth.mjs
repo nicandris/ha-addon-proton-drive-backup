@@ -29,6 +29,10 @@ let sessionState = null; // { uid, accessToken, refreshToken, keyPassword, email
 let connected = false;
 let needsTwoFactor = false;
 let pendingSession = null; // { uid, accessToken, refreshToken } awaiting a 2FA code
+// HumanVerification (Code 9001) challenge waiting for the user to solve.
+// methods e.g. ['captcha','email','sms']; webUrl is what the UI embeds.
+let needsHumanVerification = false;
+let pendingHvChallenge = null; // { methods:string[], token, webUrl, expiresAt }
 
 // Login halt. We do NOT auto-retry failed logins: repeatedly retrying SRP (e.g.
 // on every restart or schedule tick) can make Proton flag the account for
@@ -94,6 +98,13 @@ function needsTwoFactorError() {
     return Object.assign(
         new Error('Two-factor code required — enter a code in the web UI to connect.'),
         { code: 'NEEDS_2FA' },
+    );
+}
+
+function needsHvError() {
+    return Object.assign(
+        new Error('Human verification required — solve the challenge in the web UI to connect.'),
+        { code: 'NEEDS_HV' },
     );
 }
 
@@ -201,18 +212,38 @@ async function completeLogin(session) {
 }
 
 /**
- * Start a full SRP login. Completes immediately if the account has no 2FA;
- * otherwise records `needsTwoFactor` and throws NEEDS_2FA so callers stop until
- * a code is supplied via submitTwoFactorCode().
+ * Start a full SRP login. May throw NEEDS_2FA (account has 2FA, code needed)
+ * or NEEDS_HV (Proton wants HumanVerification, captcha needed); callers should
+ * keep running and surface the appropriate UI prompt.
+ *
+ * @param {?{token:string,type:string}} hv - optional, set on retry after the
+ *   user solves the HumanVerification challenge.
  */
-async function beginAuth() {
+async function beginAuth(hv = null) {
     const email = process.env.PROTON_EMAIL;
     const password = process.env.PROTON_PASSWORD;
     if (!email || !password) {
         throw new Error('PROTON_EMAIL and PROTON_PASSWORD must be set');
     }
 
-    const { session, twoFactor } = await srpAuth(email, password);
+    let result;
+    try {
+        result = await srpAuth(email, password, hv);
+    } catch (err) {
+        if (err.code === 'HV_REQUIRED') {
+            needsHumanVerification = true;
+            pendingHvChallenge = {
+                methods: err.details?.HumanVerificationMethods || ['captcha'],
+                token: err.details?.HumanVerificationToken,
+                webUrl: err.details?.WebUrl,
+                expiresAt: err.details?.ExpiresAt,
+            };
+            throw needsHvError();
+        }
+        throw err;
+    }
+
+    const { session, twoFactor } = result;
     httpClient = new HttpClient(session, onRefresh);
 
     if (twoFactor?.Enabled) {
@@ -222,6 +253,23 @@ async function beginAuth() {
     }
 
     return completeLogin(session);
+}
+
+/**
+ * Complete a pending HumanVerification challenge with the solved token from
+ * the embedded verify.proton.me iframe. Re-runs SRP with the HV headers.
+ */
+export async function submitHumanVerification(solvedToken, type = 'captcha') {
+    if (!needsHumanVerification) {
+        throw new Error('No human verification pending');
+    }
+    if (!solvedToken) throw new Error('A verification token is required');
+
+    needsHumanVerification = false;
+    pendingHvChallenge = null;
+    // beginAuth() will resurface NEEDS_HV if Proton still isn't satisfied (e.g.
+    // expired token), and NEEDS_2FA if a 2FA prompt appears next.
+    return beginAuth({ token: solvedToken, type });
 }
 
 /**
@@ -270,6 +318,8 @@ export async function ensureSession() {
     // Already waiting for a 2FA code — don't run another SRP login on each sync
     // tick (repeated logins can trip Proton's abuse protection).
     if (needsTwoFactor) throw needsTwoFactorError();
+    // Same for a pending HumanVerification challenge.
+    if (needsHumanVerification) throw needsHvError();
 
     if (!haltLoaded) {
         await loadHalt();
@@ -303,9 +353,10 @@ export async function ensureSession() {
         }
         return await beginAuth();
     } catch (err) {
-        // A 2FA prompt is an expected pause, not a failure — keep running so the
-        // user can enter a code. Everything else halts auto-attempts.
-        if (err.code === 'NEEDS_2FA') throw err;
+        // A 2FA / HumanVerification prompt is an expected pause, not a failure
+        // — keep running so the user can complete it. Everything else halts
+        // auto-attempts.
+        if (err.code === 'NEEDS_2FA' || err.code === 'NEEDS_HV') throw err;
         await haltOnAuthFailure(err);
         throw err;
     }
@@ -325,6 +376,11 @@ export function getAuthState() {
     return {
         connected,
         needsTwoFactor,
+        needsHumanVerification,
+        // The token itself is embedded in `hvWebUrl`'s query string, which the
+        // UI loads in an iframe — we don't pass the raw token to the page JS.
+        hvMethods: pendingHvChallenge?.methods || null,
+        hvWebUrl: pendingHvChallenge?.webUrl || null,
         halted: authHalt.halted,
         hardStop: authHalt.hardStop,
         lastError: authHalt.lastError,
