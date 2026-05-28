@@ -2,6 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+> **For the full reference, read [`DEVELOPMENT.md`](./DEVELOPMENT.md)** — module-by-module breakdown, the complete auth flow and its sharp edges, the Proton SDK/Supervisor integrations, build/versioning/deploy details, Proton compliance status, and a troubleshooting map. This file is the quick summary; `DEVELOPMENT.md` is the long form.
+
 ## What this is
 
 A **Home Assistant add-on** (not a custom integration) that backs up Home Assistant to Proton Drive. It is a standalone Node.js app shipped as a Docker container managed by the HA Supervisor. There is no companion Python integration — the old `custom_components/` Python/subprocess-bridge approach was removed.
