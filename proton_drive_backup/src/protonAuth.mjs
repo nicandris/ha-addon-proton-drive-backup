@@ -39,8 +39,8 @@ let pendingHvChallenge = null; // { methods:string[], token, webUrl, expiresAt }
 // "unusual activity" and lock it. After any login failure we halt and stop
 // attempting until the user explicitly clicks "Retry connection". The halt is
 // persisted to disk so a restart/watchdog loop can't bypass it and keep hitting
-// Proton. (A 2FA prompt is NOT a failure and does not halt.)
-let authHalt = { halted: false, hardStop: false, lastError: null };
+// Proton. (A 2FA / HumanVerification prompt is NOT a failure and does not halt.)
+let authHalt = { halted: false, hardStop: false, protonCode: null, lastError: null };
 let haltLoaded = false;
 
 function dataDir() {
@@ -73,8 +73,37 @@ async function persistHalt() {
 }
 
 async function clearHalt() {
-    authHalt = { halted: false, hardStop: false, lastError: null };
+    authHalt = { halted: false, hardStop: false, protonCode: null, lastError: null };
     await persistHalt();
+}
+
+// Human-readable action text matched to the actual Proton response code. The
+// 2028 path (Sentinel "potentially abusive traffic") does NOT issue a
+// verification challenge — no in-web "verify" button clears it, contrary to
+// what earlier copy implied.
+function buildHaltAdvice(halt) {
+    if (!halt.halted) return null;
+    const isSentinel =
+        halt.protonCode === 2028 || /\bCode=2028\b/.test(halt.lastError || '');
+    if (isSentinel) {
+        return (
+            'Proton has Sentinel-blocked this account/IP (Code 2028). ' +
+            'There is no in-web verification that clears this. Options: wait ' +
+            'a few hours and try again, attempt from a different network ' +
+            '(e.g. phone hotspot) to confirm IP-based blocking, or file an ' +
+            'appeal at https://proton.me/support/appeal-abuse. Leave the app ' +
+            'stopped while you wait — every retry can extend the block.'
+        );
+    }
+    if (halt.hardStop) {
+        return (
+            'Proton temporarily limited the account. Sign in at ' +
+            'https://account.proton.me — if a banner, CAPTCHA, or ' +
+            '"Confirm it\'s you" step appears, complete it; then click ' +
+            '"Retry connection". Otherwise wait and retry later.'
+        );
+    }
+    return 'Fix the underlying issue (for example wrong credentials), then click "Retry connection".';
 }
 
 // A rate-limit / abuse-protection response from Proton — worth calling out so
@@ -90,7 +119,12 @@ function isRateLimited(err) {
 }
 
 async function haltOnAuthFailure(err) {
-    authHalt = { halted: true, hardStop: isRateLimited(err), lastError: err.message };
+    authHalt = {
+        halted: true,
+        hardStop: isRateLimited(err),
+        protonCode: typeof err.protonCode === 'number' ? err.protonCode : null,
+        lastError: err.message,
+    };
     await persistHalt();
 }
 
@@ -327,14 +361,11 @@ export async function ensureSession() {
     }
     // After a prior login failure we do not attempt again automatically; the
     // user must clear the halt via retryNow() ("Retry connection" in the UI).
+    // The action text lives in `haltAdvice` (see getAuthState) so we don't
+    // bake stale guidance into the error message itself.
     if (authHalt.halted) {
         throw Object.assign(
-            new Error(
-                `Login halted after error: ${authHalt.lastError}. ` +
-                    (authHalt.hardStop
-                        ? 'Proton temporarily limited the account — sign in at account.proton.me to verify it, then click "Retry connection".'
-                        : 'Fix the issue, then click "Retry connection".'),
-            ),
+            new Error(`Login halted: ${authHalt.lastError}`),
             { code: 'AUTH_HALTED' },
         );
     }
@@ -383,7 +414,9 @@ export function getAuthState() {
         hvWebUrl: pendingHvChallenge?.webUrl || null,
         halted: authHalt.halted,
         hardStop: authHalt.hardStop,
+        protonCode: authHalt.protonCode || null,
         lastError: authHalt.lastError,
+        haltAdvice: buildHaltAdvice(authHalt),
         email: sessionState?.email || process.env.PROTON_EMAIL || null,
     };
 }
