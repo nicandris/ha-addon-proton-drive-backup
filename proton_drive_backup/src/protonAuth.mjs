@@ -58,8 +58,10 @@ function haltPath() {
 async function loadHalt() {
     try {
         authHalt = JSON.parse(await readFile(haltPath(), 'utf8'));
+        console.debug(`[protonAuth] Halt state loaded: halted=${authHalt.halted} hardStop=${authHalt.hardStop} protonCode=${authHalt.protonCode}`);
     } catch {
         // no file yet — keep defaults
+        console.debug('[protonAuth] No halt file found, starting fresh');
     }
 }
 
@@ -67,12 +69,14 @@ async function persistHalt() {
     try {
         await mkdir(dirname(haltPath()), { recursive: true });
         await writeFile(haltPath(), JSON.stringify(authHalt), 'utf8');
+        console.debug('[protonAuth] Halt state persisted');
     } catch (err) {
         console.error(`[protonAuth] Failed to persist halt state: ${err.message}`);
     }
 }
 
 async function clearHalt() {
+    console.debug('[protonAuth] Clearing auth halt');
     authHalt = { halted: false, hardStop: false, protonCode: null, lastError: null };
     await persistHalt();
 }
@@ -125,6 +129,7 @@ async function haltOnAuthFailure(err) {
         protonCode: typeof err.protonCode === 'number' ? err.protonCode : null,
         lastError: err.message,
     };
+    console.debug(`[protonAuth] Auth halted — protonCode=${authHalt.protonCode} hardStop=${authHalt.hardStop} error="${authHalt.lastError}"`);
     await persistHalt();
 }
 
@@ -182,23 +187,36 @@ async function persistSession() {
     if (!sessionState) return;
     await mkdir(dirname(sessionPath()), { recursive: true });
     await writeFile(sessionPath(), encryptSession(sessionState), 'utf8');
+    console.debug('[protonAuth] Session persisted to disk (AES-256-GCM)');
 }
 
 function onRefresh({ accessToken, refreshToken }) {
     if (!sessionState) return;
     sessionState = { ...sessionState, accessToken, refreshToken };
+    console.debug('[protonAuth] Session tokens refreshed, re-persisting');
     persistSession().catch((err) => {
         console.error(`[protonAuth] Failed to persist refreshed session: ${err.message}`);
     });
 }
 
+// Called by HttpClient when a token refresh fails (refresh token revoked or
+// expired). Resets `connected` so the next ensureSession() triggers a full
+// re-auth rather than returning a stale session.
+function onSessionExpired() {
+    connected = false;
+    console.warn('[protonAuth] Session refresh failed — will re-authenticate on next sync.');
+}
+
 async function loadPersistedSession() {
+    console.debug('[protonAuth] Looking for persisted session...');
     try {
         const raw = await readFile(sessionPath(), 'utf8');
         const parsed = JSON.parse(raw);
         if (parsed && parsed.ct && parsed.iv && parsed.salt) {
             try {
-                return decryptSession(parsed);
+                const decrypted = decryptSession(parsed);
+                console.debug(`[protonAuth] Decrypted v1 session for ${decrypted.email}`);
+                return decrypted;
             } catch (err) {
                 // Wrong key (password changed) or tampered file — force re-auth.
                 console.error(`[protonAuth] Could not decrypt persisted session: ${err.message}`);
@@ -206,8 +224,10 @@ async function loadPersistedSession() {
             }
         }
         // Legacy plaintext session — will be re-written encrypted on next persist.
+        console.debug(`[protonAuth] Loaded legacy plaintext session for ${parsed?.email} (will re-encrypt on next persist)`);
         return parsed;
     } catch {
+        console.debug('[protonAuth] No persisted session found');
         return null;
     }
 }
@@ -222,12 +242,32 @@ async function completeLogin(session) {
     const email = process.env.PROTON_EMAIL;
     const password = process.env.PROTON_PASSWORD;
 
-    const salts = await httpClient.authGet('core/v4/keys/salts');
-    const salt = (salts.KeySalts || []).find((s) => s.KeySalt);
-    if (!salt) throw new Error('No key salt found for account');
-    const keyPassword = await computeKeyPassword(password, salt.KeySalt);
+    console.debug('[protonAuth] completeLogin: fetching key salts and addresses in parallel');
+    // Fetch salts and addresses in parallel; match the salt to the primary
+    // address key by ID rather than just taking the first entry — multiple
+    // address keys can have different salts (wrong salt → wrong key password).
+    const [saltsResp, addressesResp] = await Promise.all([
+        httpClient.authGet('core/v4/keys/salts'),
+        httpClient.authGet('core/v4/addresses'),
+    ]);
+    const primaryAddr = (addressesResp.Addresses || []).find((a) => a.Status === 1);
+    const primaryKeyId =
+        (primaryAddr?.Keys || []).find((k) => k.Primary === 1)?.ID ??
+        (primaryAddr?.Keys || [])[0]?.ID;
+    const keySalts = saltsResp.KeySalts || [];
+    const matchedSalt =
+        (primaryKeyId && keySalts.find((s) => s.ID === primaryKeyId && s.KeySalt)) ||
+        keySalts.find((s) => s.KeySalt);
+    if (!matchedSalt) throw new Error('No key salt found for account');
+    console.debug(`[protonAuth] Key salt matched: keyId=${primaryKeyId ?? '(fallback)'} saltId=${matchedSalt.ID}`);
 
-    account = await buildAccount(httpClient, keyPassword);
+    console.debug('[protonAuth] Deriving key password (bcrypt)...');
+    const keyPassword = await computeKeyPassword(password, matchedSalt.KeySalt);
+    console.debug('[protonAuth] Key password derived');
+
+    console.debug('[protonAuth] Building account (importing address keys)...');
+    account = await buildAccount(httpClient, keyPassword, addressesResp);
+    console.debug('[protonAuth] Initializing Drive client...');
     initClient(httpClient, account);
 
     sessionState = {
@@ -242,6 +282,7 @@ async function completeLogin(session) {
     needsTwoFactor = false;
     pendingSession = null;
     await clearHalt();
+    console.debug('[protonAuth] Login complete — connected');
     return sessionState;
 }
 
@@ -260,17 +301,21 @@ async function beginAuth(hv = null) {
         throw new Error('PROTON_EMAIL and PROTON_PASSWORD must be set');
     }
 
+    console.debug(`[protonAuth] beginAuth: starting SRP for ${email}${hv ? ' (with HV token)' : ''}`);
     let result;
     try {
         result = await srpAuth(email, password, hv);
     } catch (err) {
         if (err.code === 'HV_REQUIRED') {
+            const methods = err.details?.HumanVerificationMethods || ['captcha'];
+            const expiresAt = err.details?.ExpiresAt;
+            console.debug(`[protonAuth] HumanVerification required: methods=${JSON.stringify(methods)} expiresAt=${expiresAt}`);
             needsHumanVerification = true;
             pendingHvChallenge = {
-                methods: err.details?.HumanVerificationMethods || ['captcha'],
+                methods,
                 token: err.details?.HumanVerificationToken,
                 webUrl: err.details?.WebUrl,
-                expiresAt: err.details?.ExpiresAt,
+                expiresAt,
             };
             throw needsHvError();
         }
@@ -278,9 +323,20 @@ async function beginAuth(hv = null) {
     }
 
     const { session, twoFactor } = result;
-    httpClient = new HttpClient(session, onRefresh);
+    httpClient = new HttpClient(session, onRefresh, onSessionExpired);
 
-    if (twoFactor?.Enabled) {
+    // Enabled bitmask: 0=none, 1=TOTP, 2=FIDO2 only, 3=both.
+    // FIDO2-only accounts cannot supply a TOTP code — surface a clear error
+    // rather than displaying a code prompt the user can never complete.
+    if (twoFactor?.Enabled === 2) {
+        throw new Error(
+            'FIDO2-only 2FA is not supported. Enable a TOTP authenticator app in ' +
+            'your Proton account settings (account.proton.me → Account → Two-factor ' +
+            'authentication), then retry.',
+        );
+    }
+    if (twoFactor?.Enabled === 1 || twoFactor?.Enabled === 3) {
+        console.debug(`[protonAuth] 2FA required (Enabled=${twoFactor.Enabled}: ${twoFactor.Enabled === 1 ? 'TOTP' : 'TOTP+FIDO2'})`);
         needsTwoFactor = true;
         pendingSession = session;
         throw needsTwoFactorError();
@@ -299,6 +355,7 @@ export async function submitHumanVerification(solvedToken, type = 'captcha') {
     }
     if (!solvedToken) throw new Error('A verification token is required');
 
+    console.debug(`[protonAuth] Submitting HV token (type=${type})`);
     needsHumanVerification = false;
     pendingHvChallenge = null;
     // beginAuth() will resurface NEEDS_HV if Proton still isn't satisfied (e.g.
@@ -316,7 +373,9 @@ export async function submitTwoFactorCode(code) {
     const trimmed = String(code).trim();
     if (!trimmed) throw new Error('A two-factor code is required');
 
-    await httpClient.authPost('auth/v4/2fa', { TwoFactorCode: trimmed });
+    console.debug('[protonAuth] Submitting 2FA code');
+    await httpClient.authPost('core/v4/auth/2fa', { TwoFactorCode: trimmed });
+    console.debug('[protonAuth] 2FA accepted, completing login');
     return completeLogin(pendingSession);
 }
 
@@ -325,20 +384,25 @@ export async function submitTwoFactorCode(code) {
  * rebuilt or verified.
  */
 async function restorePersistedSession(persisted) {
+    console.debug(`[protonAuth] Restoring session for ${persisted.email}`);
     httpClient = new HttpClient(
         { uid: persisted.uid, accessToken: persisted.accessToken, refreshToken: persisted.refreshToken },
         onRefresh,
+        onSessionExpired,
     );
+    console.debug('[protonAuth] Importing address keys from persisted key password...');
     account = await buildAccount(httpClient, persisted.keyPassword);
     initClient(httpClient, account);
 
     sessionState = { ...persisted };
     // Cheap verification call — exercises the Drive API and triggers a token
     // refresh if needed. If it throws we fall back to a full re-auth.
+    console.debug('[protonAuth] Verifying session with Drive API (listBackups)...');
     await listBackups(process.env.DRIVE_FOLDER || '');
     connected = true;
     needsTwoFactor = false;
     pendingSession = null;
+    console.debug('[protonAuth] Session restored and verified');
 }
 
 /**
@@ -347,7 +411,10 @@ async function restorePersistedSession(persisted) {
  * persisted session and a code has not yet been entered.
  */
 export async function ensureSession() {
-    if (connected) return sessionState;
+    if (connected) {
+        console.debug('[protonAuth] ensureSession: already connected');
+        return sessionState;
+    }
 
     // Already waiting for a 2FA code — don't run another SRP login on each sync
     // tick (repeated logins can trip Proton's abuse protection).
@@ -364,6 +431,7 @@ export async function ensureSession() {
     // The action text lives in `haltAdvice` (see getAuthState) so we don't
     // bake stale guidance into the error message itself.
     if (authHalt.halted) {
+        console.debug(`[protonAuth] ensureSession: auth is halted (protonCode=${authHalt.protonCode})`);
         throw Object.assign(
             new Error(`Login halted: ${authHalt.lastError}`),
             { code: 'AUTH_HALTED' },
@@ -373,6 +441,7 @@ export async function ensureSession() {
     try {
         const persisted = await loadPersistedSession();
         if (persisted && persisted.uid && persisted.keyPassword) {
+            console.debug('[protonAuth] ensureSession: attempting session restore');
             try {
                 await restorePersistedSession(persisted);
                 await clearHalt();
@@ -381,6 +450,8 @@ export async function ensureSession() {
                 console.error(`[protonAuth] Session restore failed, re-authenticating: ${err.message}`);
                 connected = false;
             }
+        } else {
+            console.debug('[protonAuth] ensureSession: no usable persisted session, starting fresh auth');
         }
         return await beginAuth();
     } catch (err) {
@@ -398,6 +469,7 @@ export async function ensureSession() {
  * the web UI after they've fixed credentials or verified the account.
  */
 export async function retryNow() {
+    console.debug('[protonAuth] retryNow: clearing halt and re-trying');
     await clearHalt();
     haltLoaded = true;
     return ensureSession();
@@ -412,6 +484,7 @@ export function getAuthState() {
         // UI loads in an iframe — we don't pass the raw token to the page JS.
         hvMethods: pendingHvChallenge?.methods || null,
         hvWebUrl: pendingHvChallenge?.webUrl || null,
+        hvExpiresAt: pendingHvChallenge?.expiresAt || null,
         halted: authHalt.halted,
         hardStop: authHalt.hardStop,
         protonCode: authHalt.protonCode || null,

@@ -53,35 +53,61 @@ class Account {
  *
  * @param {import('./httpClient.mjs').HttpClient} httpClient
  * @param {string} keyPassword - passphrase that unlocks the address keys
+ * @param {object|null} prefetchedBody - optional pre-fetched /core/v4/addresses
+ *   response body; avoids a duplicate API call when the caller already has it.
  */
-export async function buildAccount(httpClient, keyPassword) {
-    const body = await httpClient.authGet('core/v4/addresses');
+export async function buildAccount(httpClient, keyPassword, prefetchedBody = null) {
+    if (prefetchedBody) {
+        console.debug('[account] Using pre-fetched addresses response');
+    } else {
+        console.debug('[account] Fetching addresses from API');
+    }
+    const body = prefetchedBody ?? await httpClient.authGet('core/v4/addresses');
+    const rawAddresses = body.Addresses || [];
+    console.debug(`[account] ${rawAddresses.length} address(es) returned, filtering for enabled`);
+
     const addresses = [];
 
-    for (const addr of body.Addresses || []) {
-        if (addr.Status !== 1) continue; // 1 = enabled
+    for (const addr of rawAddresses) {
+        if (addr.Status !== 1) {
+            console.debug(`[account] Skipping disabled address ${addr.Email} (Status=${addr.Status})`);
+            continue;
+        }
+        const rawKeys = addr.Keys || [];
+        console.debug(`[account] Processing address ${addr.Email} — ${rawKeys.length} key(s)`);
+
         const keys = [];
-        for (const k of addr.Keys || []) {
-            if (!k.PrivateKey) continue;
+        for (const k of rawKeys) {
+            if (!k.PrivateKey) {
+                console.debug(`[account]   Key ${k.ID}: no PrivateKey field, skipping`);
+                continue;
+            }
             try {
                 const key = await CryptoProxy.importPrivateKey({
                     armoredKey: k.PrivateKey,
                     passphrase: keyPassword,
                 });
                 keys.push({ id: k.ID, key });
+                console.debug(`[account]   Key ${k.ID}: imported (Primary=${k.Primary ?? 0})`);
             } catch {
                 // Key not unlockable with this password — skip it
+                console.debug(`[account]   Key ${k.ID}: unlock failed with current key password, skipping`);
             }
         }
-        if (keys.length === 0) continue;
+        if (keys.length === 0) {
+            console.debug(`[account] Address ${addr.Email}: no usable keys, skipping`);
+            continue;
+        }
 
         const primaryKeyIndex = Math.max(
             0,
             (addr.Keys || []).filter((k) => k.PrivateKey).findIndex((k) => k.Primary === 1),
         );
+        console.debug(`[account] Address ${addr.Email}: ${keys.length} key(s) imported, primaryKeyIndex=${primaryKeyIndex}`);
         addresses.push({ email: addr.Email, addressId: addr.ID, primaryKeyIndex, keys });
     }
 
     if (addresses.length === 0) throw new Error('No usable Proton address keys');
+    console.debug(`[account] Account built: ${addresses.length} usable address(es)`);
     return new Account(addresses);
 }

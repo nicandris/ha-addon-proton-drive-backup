@@ -7,14 +7,15 @@
  * on SIGTERM.
  */
 
+// Must be first import so console is patched before any other module logs.
+import { setLogLevel } from './logger.mjs';
+
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { setupCrypto } from './cryptoSetup.mjs';
 import { startIngressServer } from './ingress.mjs';
 import { runSync, setNextSyncEpoch } from './orchestrator.mjs';
-
-const LOG_LEVELS = { error: 0, warning: 1, info: 2, debug: 3 };
 
 function readConfig() {
     return {
@@ -30,23 +31,9 @@ function readConfig() {
     };
 }
 
-function installLogging(level) {
-    const threshold = LOG_LEVELS[level] ?? LOG_LEVELS.info;
-    const stamp = () => new Date().toISOString();
-    const origLog = console.log.bind(console);
-    const origErr = console.error.bind(console);
-    console.log = (...args) => {
-        if (threshold >= LOG_LEVELS.info) origLog(`[${stamp()}]`, ...args);
-    };
-    console.debug = (...args) => {
-        if (threshold >= LOG_LEVELS.debug) origLog(`[${stamp()}] [debug]`, ...args);
-    };
-    console.error = (...args) => origErr(`[${stamp()}]`, ...args);
-}
-
 async function main() {
     const config = readConfig();
-    installLogging(config.logLevel);
+    setLogLevel(config.logLevel);
 
     console.log('Starting Proton Drive Backup add-on');
     console.log(
@@ -54,23 +41,36 @@ async function main() {
             `proton retention=${config.backupsInProton}, HA retention=${config.backupsInHA}, ` +
             `full=${config.fullBackup}`,
     );
+    console.debug(
+        `[main] Full config: ${JSON.stringify({
+            ...config,
+            protonEmail: config.protonEmail ? config.protonEmail : '(not set)',
+        })}`,
+    );
 
+    console.debug('[main] Initializing OpenPGP crypto...');
     await setupCrypto();
+    console.debug('[main] Crypto ready');
+
     await mkdir(join(config.dataDir, 'tmp'), { recursive: true });
+    console.debug(`[main] Temp dir: ${join(config.dataDir, 'tmp')}`);
 
     startIngressServer();
 
     if (config.intervalHours > 0) {
         setNextSyncEpoch(Date.now() + 5000);
+        console.debug(`[main] Scheduler: first sync in 5 s, then every ${config.intervalHours}h`);
     }
 
     // Initial sync shortly after startup. Errors are swallowed by runSync, but
     // guard anyway so a failure never takes down the ingress server.
     setTimeout(() => {
+        console.debug('[main] Running initial sync');
         runSync()
             .then(() => {
                 if (config.intervalHours > 0) {
-                    setNextSyncEpoch(Date.now() + config.intervalHours * 3600 * 1000);
+                    const nextMs = config.intervalHours * 3600 * 1000;
+                    setNextSyncEpoch(Date.now() + nextMs);
                 }
             })
             .catch((err) => console.error(`Initial sync error: ${err.message}`));
@@ -79,6 +79,7 @@ async function main() {
     if (config.intervalHours > 0) {
         const intervalMs = config.intervalHours * 3600 * 1000;
         setInterval(() => {
+            console.debug('[main] Scheduled sync triggered');
             runSync()
                 .then(() => setNextSyncEpoch(Date.now() + intervalMs))
                 .catch((err) => console.error(`Scheduled sync error: ${err.message}`));
