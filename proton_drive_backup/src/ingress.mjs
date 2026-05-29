@@ -11,6 +11,7 @@ import { createServer } from 'node:http';
 import * as proton from './protonClient.mjs';
 import * as orchestrator from './orchestrator.mjs';
 import { getAuthState, submitTwoFactorCode, submitHumanVerification, retryNow } from './protonAuth.mjs';
+import { getLogLevel, setLogLevel } from './logger.mjs';
 
 function driveFolder() {
     return process.env.DRIVE_FOLDER || 'Home Assistant Backups';
@@ -69,6 +70,8 @@ async function buildStatus() {
         needsHumanVerification: auth.needsHumanVerification,
         hvMethods: auth.hvMethods,
         hvWebUrl: auth.hvWebUrl,
+        hvExpiresAt: auth.hvExpiresAt,
+        logLevel: getLogLevel(),
         halted: auth.halted,
         hardStop: auth.hardStop,
         haltAdvice: auth.haltAdvice,
@@ -104,6 +107,7 @@ function renderPage() {
   th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; font-size: .9rem; }
   .err { color: #c62828; white-space: pre-wrap; }
   .actions button { margin-right: .35rem; }
+  select { font-size: .85rem; border: 1px solid #ccc; border-radius: 4px; padding: .15rem .35rem; background: #fff; cursor: pointer; }
 </style>
 </head>
 <body>
@@ -121,6 +125,7 @@ function renderPage() {
     Proton is asking for a one-time verification. Complete the challenge below
     and we'll continue signing in automatically.
   </p>
+  <p id="hvExpiry" style="color:#b94a48;margin:.25rem 0 .5rem;display:none">The verification challenge may have expired. If submission fails, click "Retry connection" to get a fresh one.</p>
   <iframe id="hvFrame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox" style="width:100%;min-height:420px;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe>
   <div class="err" id="hvError" style="margin-top:.5rem"></div>
 </div>
@@ -162,6 +167,11 @@ async function refresh() {
       '<div class="row"><span>Schedule</span><span>' + (s.schedule || '') + '</span></div>' +
       '<div class="row"><span>Last sync</span><span>' + (s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
       '<div class="row"><span>Next sync</span><span>' + next + '</span></div>' +
+      '<div class="row"><span>Log level</span><span>' +
+        '<select id="logLevel" onchange="changeLogLevel(this.value)">' +
+        ['error','warning','info','debug'].map(function(l){ return '<option value="'+l+'"'+(s.logLevel===l?' selected':'')+'>'+l+'</option>'; }).join('') +
+        '</select>' +
+      '</span></div>' +
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
     document.getElementById('twoFactorCard').style.display = s.needsTwoFactor ? 'block' : 'none';
     document.getElementById('retryCard').style.display = s.halted ? 'block' : 'none';
@@ -177,6 +187,9 @@ async function refresh() {
       // passed; we also need it so the captcha lays out for an iframe context.
       var src = s.hvWebUrl + (s.hvWebUrl.indexOf('?') === -1 ? '?' : '&') + 'embed=true';
       if (hvFrame.getAttribute('src') !== src) hvFrame.setAttribute('src', src);
+      var hvExpiry = document.getElementById('hvExpiry');
+      var expired = s.hvExpiresAt && new Date(s.hvExpiresAt) < new Date();
+      hvExpiry.style.display = expired ? 'block' : 'none';
     } else {
       hvCard.style.display = 'none';
       hvFrame.removeAttribute('src');
@@ -271,6 +284,15 @@ window.addEventListener('message', async function(ev){
     refresh();
   } catch (e) { /* never let a stray message break the UI */ }
 });
+async function changeLogLevel(level) {
+  try {
+    await fetch('api/log-level', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level: level }),
+    });
+  } catch (e) { /* level resets on next refresh if this fails */ }
+}
 document.getElementById('retryBtn').onclick = async function(){
   var btn = this; btn.disabled = true;
   try {
@@ -308,6 +330,7 @@ async function handle(req, res) {
     const url = new URL(req.url, 'http://localhost');
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const method = req.method || 'GET';
+    console.debug(`[ingress] ${method} ${path}`);
 
     if (method === 'GET' && path === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
@@ -317,6 +340,22 @@ async function handle(req, res) {
 
     if (method === 'GET' && path === '/api/status') {
         sendJson(res, 200, await buildStatus());
+        return;
+    }
+
+    if (method === 'GET' && path === '/api/log-level') {
+        sendJson(res, 200, { level: getLogLevel() });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/log-level') {
+        const body = await readBody(req);
+        try {
+            setLogLevel(body.level);
+            sendJson(res, 200, { ok: true, level: getLogLevel() });
+        } catch (err) {
+            sendJson(res, 400, { ok: false, error: err.message });
+        }
         return;
     }
 
