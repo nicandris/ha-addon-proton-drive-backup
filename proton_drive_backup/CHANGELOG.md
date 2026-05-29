@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.1.11
+
+- **Auth correctness fixes** verified against ProtonMail/WebClients and
+  `@protontech/crypto`:
+  - Match `KeySalt` to the primary address key by ID (was: first salt entry —
+    multi-address accounts could derive the wrong key password).
+  - FIDO2-only 2FA accounts now show a clear "enable TOTP" error instead of an
+    unfillable code prompt.
+  - SRP module wired correctly for the SDK's sharing paths (passes username,
+    fetches modulus from `/core/v4/auth/modulus`, returns `modulusId`).
+  - 30 s timeout on all auth API + token-refresh calls.
+  - `getAuthVersionWithFallback` loop for legacy Version=0 accounts.
+  - Token-refresh failure now resets `connected` so the UI no longer shows
+    "connected" while Drive calls fail.
+  - Human-verification `ExpiresAt` surfaced with an inline expiry hint.
+  - Canonical `/core/v4/auth/...` endpoint paths (vs the `auth/v4` aliases).
+  - `Intent: "Proton"` + `PersistentCookies: 0` added to auth bodies;
+    `RedirectURI` updated from `protonmail.ch` to `proton.me` on refresh.
+- **Runtime log-level control.** New log-level dropdown in the status card
+  (`error` / `warning` / `info` / `debug`), `GET`/`POST /api/log-level`
+  endpoint, and verbose debug tracing across SRP, token refresh, key import,
+  Drive folder resolution, upload/download/prune, Supervisor calls, and
+  ingress routing.
+
 ## 0.1.10
 
 - **Add prominent warning** at the top of the repo README, app README, and
