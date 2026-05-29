@@ -65,21 +65,32 @@ export function getStatus() {
 
 async function syncBackupsToProton() {
     const { driveFolder, dataDir } = cfg();
-    const haBackups = await supervisor.listBackups();
-    const protonBackups = await proton.listBackups(driveFolder);
+    console.debug('[orchestrator] syncBackupsToProton: listing HA and Proton backups...');
+    const [haBackups, protonBackups] = await Promise.all([
+        supervisor.listBackups(),
+        proton.listBackups(driveFolder),
+    ]);
+    console.debug(`[orchestrator] HA backups: ${haBackups.length}, Proton backups: ${protonBackups.length}`);
 
     const presentSlugs = new Set(
         protonBackups.map((b) => b.metadata?.slug).filter(Boolean),
     );
+    console.debug(`[orchestrator] Slugs already in Proton: ${[...presentSlugs].join(', ') || '(none)'}`);
 
     await mkdir(tmpDir(), { recursive: true });
 
+    let uploaded = 0;
     for (const ha of haBackups) {
-        if (presentSlugs.has(ha.slug)) continue;
+        if (presentSlugs.has(ha.slug)) {
+            console.debug(`[orchestrator] Skipping ${ha.slug} — already in Proton`);
+            continue;
+        }
         const tmpPath = join(tmpDir(), `${ha.slug}.tar`);
         try {
             console.log(`[orchestrator] Uploading HA backup ${ha.slug} (${ha.name}) to Proton`);
+            console.debug(`[orchestrator] Downloading from Supervisor → ${tmpPath}`);
             await supervisor.downloadBackup(ha.slug, tmpPath);
+            console.debug(`[orchestrator] Uploading ${ha.slug} to Drive folder "${driveFolder}"...`);
             await proton.uploadBackup(
                 tmpPath,
                 `${ha.name}.tar`,
@@ -92,6 +103,8 @@ async function syncBackupsToProton() {
                 },
                 driveFolder,
             );
+            uploaded++;
+            console.debug(`[orchestrator] Upload of ${ha.slug} complete`);
         } catch (err) {
             state.lastError = `Upload of ${ha.slug} failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
@@ -99,17 +112,22 @@ async function syncBackupsToProton() {
             await rm(tmpPath, { force: true }).catch(() => {});
         }
     }
+    console.debug(`[orchestrator] syncBackupsToProton done: ${uploaded} uploaded, ${haBackups.length - uploaded - (haBackups.length - presentSlugs.size - uploaded < 0 ? 0 : haBackups.length - presentSlugs.size - uploaded)} errors`);
 }
 
 export async function pruneProton() {
     const { driveFolder, backupsInProton } = cfg();
-    if (backupsInProton <= 0) return;
+    if (backupsInProton <= 0) {
+        console.debug('[orchestrator] pruneProton: retention disabled, skipping');
+        return;
+    }
 
     const backups = await proton.listBackups(driveFolder);
     const sorted = [...backups].sort(
         (a, b) => new Date(a.metadata?.date || 0) - new Date(b.metadata?.date || 0),
     );
     const excess = sorted.length - backupsInProton;
+    console.debug(`[orchestrator] pruneProton: retention=${backupsInProton} current=${sorted.length} to_prune=${Math.max(0, excess)}`);
     for (let i = 0; i < excess; i++) {
         const b = sorted[i];
         try {
@@ -124,13 +142,17 @@ export async function pruneProton() {
 
 export async function pruneHA() {
     const { backupsInHA } = cfg();
-    if (backupsInHA <= 0) return;
+    if (backupsInHA <= 0) {
+        console.debug('[orchestrator] pruneHA: retention disabled, skipping');
+        return;
+    }
 
     const haBackups = await supervisor.listBackups();
     // Only ever touch backups this add-on created.
     const ours = haBackups.filter((b) => (b.name || '').startsWith(ADDON_BACKUP_PREFIX));
     const sorted = ours.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
     const excess = sorted.length - backupsInHA;
+    console.debug(`[orchestrator] pruneHA: retention=${backupsInHA} ours=${ours.length} total_ha=${haBackups.length} to_prune=${Math.max(0, excess)}`);
     for (let i = 0; i < excess; i++) {
         const b = sorted[i];
         try {
@@ -144,28 +166,39 @@ export async function pruneHA() {
 }
 
 export async function runSync() {
+    console.debug('[orchestrator] runSync: started');
     try {
         state.lastError = null;
+        console.debug('[orchestrator] runSync: ensuring session...');
         await ensureSession();
+        console.debug('[orchestrator] runSync: session ready');
 
         const { intervalHours, backupPassword, fullBackup } = cfg();
         if (intervalHours > 0) {
             const name = `${ADDON_BACKUP_PREFIX} ${new Date().toISOString()}`;
             console.log(`[orchestrator] Creating new HA backup "${name}"`);
+            console.debug(`[orchestrator] Backup params: full=${fullBackup} password=${backupPassword ? 'set' : 'none'}`);
             try {
                 await supervisor.createBackup({ name, password: backupPassword, full: fullBackup });
+                console.debug('[orchestrator] HA backup created successfully');
             } catch (err) {
                 state.lastError = `Backup creation failed: ${describeError(err)}`;
                 console.error(`[orchestrator] ${state.lastError}`);
             }
+        } else {
+            console.debug('[orchestrator] runSync: interval=0, skipping backup creation (upload-only mode)');
         }
 
+        console.debug('[orchestrator] runSync: syncing to Proton...');
         await syncBackupsToProton();
+        console.debug('[orchestrator] runSync: pruning Proton...');
         await pruneProton();
+        console.debug('[orchestrator] runSync: pruning HA...');
         await pruneHA();
 
         state.lastSync = new Date().toISOString();
         console.log(`[orchestrator] Sync complete at ${state.lastSync}`);
+        console.debug('[orchestrator] runSync: finished successfully');
     } catch (err) {
         state.lastError = describeError(err);
         console.error(`[orchestrator] Sync failed: ${state.lastError}`);
@@ -174,13 +207,17 @@ export async function runSync() {
 
 export async function restoreToHA(linkId) {
     const { dataDir, backupPassword } = cfg();
+    console.debug(`[orchestrator] restoreToHA: linkId=${linkId}`);
     await mkdir(tmpDir(), { recursive: true });
     const tmpPath = join(tmpDir(), 'restore.tar');
     try {
         await ensureSession();
         console.log(`[orchestrator] Restoring Proton backup ${linkId}`);
+        console.debug('[orchestrator] restoreToHA: downloading from Drive...');
         await proton.downloadBackup(linkId, tmpPath);
+        console.debug('[orchestrator] restoreToHA: uploading to Supervisor...');
         const slug = await supervisor.uploadBackup(tmpPath);
+        console.debug(`[orchestrator] restoreToHA: starting HA restore for slug=${slug}...`);
         await supervisor.restoreBackup(slug, backupPassword);
         console.log(`[orchestrator] Restore of ${linkId} started (slug ${slug})`);
         return { slug };

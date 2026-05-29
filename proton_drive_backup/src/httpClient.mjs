@@ -9,7 +9,7 @@
  *   2. `srpAuth` — the SRP login flow, using @protontech/crypto's SRP.
  */
 
-import { getSrp } from '@protontech/crypto/srp';
+import { getSrp, getAuthVersionWithFallback } from '@protontech/crypto/srp';
 
 // Proton's account/auth + core API host. Note `api.proton.me` does NOT exist
 // (NXDOMAIN); the real hosts follow the `<service>-api.proton.me` pattern, the
@@ -53,10 +53,11 @@ function authError(message) {
 }
 
 export class HttpClient {
-    constructor(session, onRefresh = null) {
+    constructor(session, onRefresh = null, onSessionExpired = null) {
         // session: { uid, accessToken, refreshToken }
         this.session = session;
         this.onRefresh = onRefresh;
+        this.onSessionExpired = onSessionExpired;
     }
 
     updateSession(patch) {
@@ -94,29 +95,40 @@ export class HttpClient {
         const send = () =>
             fetch(url, { method: request.method, headers, body, signal: request.signal });
 
+        console.debug(`[httpClient] Drive API ${request.method} ${url.replace(/^https:\/\/[^/]+/, '')}`);
         let response = await send();
         if (response.status === 401 && isDriveApi && this.session.refreshToken) {
+            console.debug('[httpClient] Drive API 401, refreshing token...');
             await this._refresh();
             headers.set('Authorization', `Bearer ${this.session.accessToken}`);
             response = await send();
         }
+        console.debug(`[httpClient] Drive API response: HTTP ${response.status}`);
         return response;
     }
 
     async _refresh() {
-        const resp = await fetch(`${AUTH_API}/auth/v4/refresh`, {
+        const shortUid = this.session.uid?.slice(0, 8) ?? '?';
+        console.debug(`[httpClient] Refreshing access token (uid prefix: ${shortUid})`);
+        const resp = await fetch(`${AUTH_API}/core/v4/auth/refresh`, {
             method: 'POST',
             headers: { 'x-pm-uid': this.session.uid, ...JSON_HEADERS },
             body: JSON.stringify({
                 ResponseType: 'token',
                 GrantType: 'refresh_token',
                 RefreshToken: this.session.refreshToken,
-                RedirectURI: 'https://protonmail.ch',
+                RedirectURI: 'https://proton.me',
             }),
+            signal: AbortSignal.timeout(30_000),
         });
-        if (!resp.ok) throw authError('Session expired');
+        if (!resp.ok) {
+            console.debug(`[httpClient] Token refresh failed: HTTP ${resp.status}`);
+            this.onSessionExpired?.();
+            throw authError('Session expired');
+        }
         const data = await resp.json();
         this.updateSession({ accessToken: data.AccessToken, refreshToken: data.RefreshToken });
+        console.debug('[httpClient] Token refreshed successfully');
         if (this.onRefresh) {
             this.onRefresh({ accessToken: data.AccessToken, refreshToken: data.RefreshToken });
         }
@@ -133,27 +145,29 @@ export class HttpClient {
     }
 
     async _authApi(method, path, body = null) {
-        let resp = await fetch(`${AUTH_API}/${path}`, {
+        console.debug(`[httpClient] Auth API ${method} ${path}`);
+        const opts = () => ({
             method,
             headers: this._baseHeaders(),
             body: body ? JSON.stringify(body) : undefined,
+            signal: AbortSignal.timeout(30_000),
         });
+        let resp = await fetch(`${AUTH_API}/${path}`, opts());
         if (resp.status === 401 && this.session.refreshToken) {
+            console.debug(`[httpClient] Auth API 401 on ${path}, refreshing token...`);
             await this._refresh();
-            resp = await fetch(`${AUTH_API}/${path}`, {
-                method,
-                headers: this._baseHeaders(),
-                body: body ? JSON.stringify(body) : undefined,
-            });
+            resp = await fetch(`${AUTH_API}/${path}`, opts());
         }
         const json = await resp.json();
         if (!resp.ok || (json.Code !== 1000 && json.Code !== 1001)) {
+            console.debug(`[httpClient] Auth API error: ${path} Code=${json.Code} HTTP=${resp.status}`);
             throw Object.assign(new Error(formatProtonError(path, json, resp.status)), {
                 protonCode: json.Code,
                 httpStatus: resp.status,
                 details: json.Details,
             });
         }
+        console.debug(`[httpClient] Auth API ${method} ${path} → Code=${json.Code}`);
         return json;
     }
 
@@ -183,6 +197,10 @@ function hvRequiredError(stage, json, status) {
 /**
  * Perform the SRP login flow and return a session + the account's 2FA info.
  *
+ * For modern accounts (Version >= 1) this is a single SRP exchange. For legacy
+ * Version=0 accounts getAuthVersionWithFallback drives a retry loop through
+ * versions 2 → 1 → 0 until the server accepts a proof.
+ *
  * @param {string} email
  * @param {string} password
  * @param {?{token:string,type:string}} hv - optional HumanVerification headers
@@ -190,65 +208,95 @@ function hvRequiredError(stage, json, status) {
  * @returns {{ session: {uid,accessToken,refreshToken}, twoFactor: object }}
  */
 export async function srpAuth(email, password, hv = null) {
+    console.debug(`[httpClient] SRP auth starting for ${email}`);
     const headers = { ...JSON_HEADERS };
     if (hv?.token && hv?.type) {
         headers['x-pm-human-verification-token'] = hv.token;
         headers['x-pm-human-verification-token-type'] = hv.type;
+        console.debug(`[httpClient] HV token attached (type=${hv.type})`);
     }
 
-    const infoResp = await fetch(`${AUTH_API}/auth/v4/info`, {
+    console.debug('[httpClient] Fetching auth info (core/v4/auth/info)');
+    const infoResp = await fetch(`${AUTH_API}/core/v4/auth/info`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ Username: email }),
+        body: JSON.stringify({ Username: email, Intent: 'Proton' }),
+        signal: AbortSignal.timeout(30_000),
     });
     const info = await infoResp.json();
-    if (info.Code === 9001) throw hvRequiredError('auth/v4/info', info, infoResp.status);
+    if (info.Code === 9001) throw hvRequiredError('core/v4/auth/info', info, infoResp.status);
     if (info.Code !== 1000) {
-        throw Object.assign(authError(formatProtonError('auth/v4/info', info, infoResp.status)), {
+        throw Object.assign(authError(formatProtonError('core/v4/auth/info', info, infoResp.status)), {
             protonCode: info.Code,
             httpStatus: infoResp.status,
             details: info.Details,
         });
     }
+    console.debug(`[httpClient] Auth info: version=${info.Version} srp_session=${info.SRPSession?.slice(0, 8)}...`);
 
-    const srp = await getSrp(
-        {
-            Version: info.Version,
-            Modulus: info.Modulus,
-            ServerEphemeral: info.ServerEphemeral,
-            Username: email,
-            Salt: info.Salt,
-        },
-        { username: email, password },
-    );
+    // For modern accounts (Version >= 1), getAuthVersionWithFallback returns the
+    // server version immediately (done=true, one iteration). For legacy Version=0
+    // accounts it sequences through fallback versions (2 → 1 → 0) until the
+    // server accepts — each version hashes the password differently.
+    let lastVersion;
+    for (;;) {
+        const { version, done } = getAuthVersionWithFallback({ Version: info.Version }, email, lastVersion);
+        console.debug(`[httpClient] SRP attempt: authVersion=${version} done=${done}${lastVersion !== undefined ? ` (fallback from ${lastVersion})` : ''}`);
 
-    const authResp = await fetch(`${AUTH_API}/auth/v4`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-            Username: email,
-            ClientEphemeral: srp.clientEphemeral,
-            ClientProof: srp.clientProof,
-            SRPSession: info.SRPSession,
-        }),
-    });
-    const auth = await authResp.json();
+        const srp = await getSrp(
+            {
+                Version: info.Version,
+                Modulus: info.Modulus,
+                ServerEphemeral: info.ServerEphemeral,
+                Username: email,
+                Salt: info.Salt,
+            },
+            { username: email, password },
+            version,
+        );
 
-    if (auth.Code === 9001) throw hvRequiredError('auth/v4', auth, authResp.status);
-    if (auth.Code === 8002 || auth.Code === 10013) throw authError('Invalid credentials');
-    if (auth.Code !== 1000) {
-        throw Object.assign(new Error(formatProtonError('auth/v4', auth, authResp.status)), {
-            protonCode: auth.Code,
-            httpStatus: authResp.status,
-            details: auth.Details,
+        console.debug('[httpClient] Submitting SRP proof (core/v4/auth)');
+        const authResp = await fetch(`${AUTH_API}/core/v4/auth`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({
+                Username: email,
+                ClientEphemeral: srp.clientEphemeral,
+                ClientProof: srp.clientProof,
+                SRPSession: info.SRPSession,
+                PersistentCookies: 0,
+            }),
+            signal: AbortSignal.timeout(30_000),
         });
-    }
-    if (auth.ServerProof !== srp.expectedServerProof) {
-        throw authError('Server proof verification failed');
-    }
+        const auth = await authResp.json();
+        console.debug(`[httpClient] Auth response: Code=${auth.Code} HTTP=${authResp.status}`);
 
-    return {
-        session: { uid: auth.UID, accessToken: auth.AccessToken, refreshToken: auth.RefreshToken },
-        twoFactor: auth['2FA'] || {},
-    };
+        if (auth.Code === 9001) throw hvRequiredError('core/v4/auth', auth, authResp.status);
+        if (auth.Code === 8002 || auth.Code === 10013) {
+            if (done) throw authError('Invalid credentials');
+            console.debug(`[httpClient] Auth rejected (Code=${auth.Code}), trying next fallback version`);
+            lastVersion = version;
+            continue;
+        }
+        if (auth.Code !== 1000) {
+            throw Object.assign(new Error(formatProtonError('core/v4/auth', auth, authResp.status)), {
+                protonCode: auth.Code,
+                httpStatus: authResp.status,
+                details: auth.Details,
+            });
+        }
+        if (auth.ServerProof !== srp.expectedServerProof) {
+            if (done) throw authError('Server proof verification failed');
+            console.debug('[httpClient] Server proof mismatch, trying next fallback version');
+            lastVersion = version;
+            continue;
+        }
+
+        const twoFactor = auth['2FA'] || {};
+        console.debug(`[httpClient] SRP auth successful (uid prefix: ${auth.UID?.slice(0, 8)}, 2FA.Enabled=${twoFactor.Enabled ?? 0})`);
+        return {
+            session: { uid: auth.UID, accessToken: auth.AccessToken, refreshToken: auth.RefreshToken },
+            twoFactor,
+        };
+    }
 }

@@ -24,6 +24,7 @@ function authHeaders(extra = {}) {
 }
 
 async function supervisorJson(method, path, body) {
+    console.debug(`[supervisor] ${method} ${path}`);
     const headers = authHeaders();
     let payload;
     if (body !== undefined) {
@@ -40,12 +41,15 @@ async function supervisorJson(method, path, body) {
     if (json.result === 'error' || !resp.ok) {
         throw new Error(`Supervisor ${method} ${path} failed: ${json.message || resp.statusText}`);
     }
+    console.debug(`[supervisor] ${method} ${path} → OK`);
     return json.data;
 }
 
 export async function listBackups() {
     const data = await supervisorJson('GET', '/backups');
-    return data.backups || [];
+    const backups = data.backups || [];
+    console.debug(`[supervisor] listBackups: ${backups.length} backup(s) in HA`);
+    return backups;
 }
 
 export async function getBackupInfo(slug) {
@@ -55,6 +59,7 @@ export async function getBackupInfo(slug) {
 export async function createBackup({ name, password, full = true } = {}) {
     const body = { name, compressed: true, background: false };
     if (password) body.password = password;
+    console.debug(`[supervisor] createBackup: name="${name}" full=${full} password=${password ? 'set' : 'none'}`);
     let data;
     if (full) {
         data = await supervisorJson('POST', '/backups/new/full', body);
@@ -64,10 +69,12 @@ export async function createBackup({ name, password, full = true } = {}) {
             homeassistant: true,
         });
     }
+    console.debug(`[supervisor] createBackup: created slug=${data.slug}`);
     return data.slug;
 }
 
 export async function downloadBackup(slug, destPath) {
+    console.debug(`[supervisor] downloadBackup: slug=${slug} → ${destPath}`);
     const resp = await fetch(`${BASE_URL}/backups/${slug}/download`, {
         method: 'GET',
         headers: authHeaders(),
@@ -76,9 +83,11 @@ export async function downloadBackup(slug, destPath) {
         throw new Error(`Supervisor download ${slug} failed: HTTP ${resp.status}`);
     }
     await pipeline(Readable.fromWeb(resp.body), createWriteStream(destPath));
+    console.debug(`[supervisor] downloadBackup: ${slug} written to ${destPath}`);
 }
 
 export async function uploadBackup(srcPath) {
+    console.debug(`[supervisor] uploadBackup: ${srcPath}`);
     const buf = await readFile(srcPath);
     const form = new FormData();
     form.append(
@@ -100,14 +109,17 @@ export async function uploadBackup(srcPath) {
     if (json.result === 'error' || !resp.ok) {
         throw new Error(`Supervisor upload failed: ${json.message || resp.statusText}`);
     }
+    console.debug(`[supervisor] uploadBackup: slug=${json.data.slug}`);
     return json.data.slug;
 }
 
 export async function deleteBackup(slug) {
     await supervisorJson('DELETE', `/backups/${slug}`);
+    console.debug(`[supervisor] deleteBackup: ${slug} deleted`);
 }
 
 export async function restoreBackup(slug, password) {
+    console.debug(`[supervisor] restoreBackup: slug=${slug} password=${password ? 'set' : 'none'}`);
     const body = { background: false };
     if (password) body.password = password;
     return supervisorJson('POST', `/backups/${slug}/restore/full`, body);
