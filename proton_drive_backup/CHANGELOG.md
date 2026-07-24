@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0
+
+- **Split retention into two independent buckets: AUTOMATIC vs APP.** Home
+  Assistant makes big scheduled "Automatic backup" archives *and* many small
+  per-add-on "app" backups (created before add-on updates). Previously a single
+  total limit per side meant a burst of app backups could evict the important
+  Automatic ones. Retention is now enforced **per bucket**, so the two never
+  compete. Backups are classified **by name**: anything whose name starts with
+  "Automatic backup" is *automatic*; everything else is *app*. This works on both
+  an HA backup name and a Proton remote filename.
+- **Clear error button.** A "Clear" button next to *Last error* dismisses a
+  stale error without waiting for the next successful sync.
+- **Config migration — action may be needed.** The two old options were
+  **replaced** by four new ones:
+  - `backups_in_proton` → **`keep_automatic_in_proton`** (default `10`) +
+    **`keep_app_in_proton`** (default `10`)
+  - `backups_in_ha` → **`keep_automatic_in_ha`** (default `0`) +
+    **`keep_app_in_ha`** (default `0`)
+
+  As before, `0` means "keep all" for the Proton limits, and `0` disables that
+  bucket's manual HA clean-up. Proton retention still runs automatically each
+  sync (per bucket now); HA clean-up stays manual-only via **Clean up local
+  backups** and still **never** deletes a backup that isn't already in Proton —
+  the safety invariant now holds independently in each bucket.
+- **Settings shown in the Web UI.** A new **Settings** card (in the responsive
+  2-column grid) shows the effective configuration read-only: drive folder, sync
+  interval, the four keep-counts, whether a backup password is set (boolean
+  only — the password is never exposed), and the staging dir if overridden. The
+  statistics card now also splits the counts by bucket ("N automatic, M app").
+- **Clean up local backups** hint/confirm now reflect the two HA limits and the
+  button is disabled only when **both** are `0`.
+
 ## 0.3.1
 
 - **Manual "Create backup" button.** Creates a new full Home Assistant backup on

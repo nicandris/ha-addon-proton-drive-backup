@@ -103,12 +103,18 @@ subfolder whose name is the slug. That is why the repo name and the
    under its final `<name> (<slug>).tar`, upload it, then delete the temp file. A
    backup that HA lists but `404`s on download (a stale/phantom entry) is
    **skipped** with a warning, not treated as a hard error.
-3. `pruneProton()` — trash mirrored backups beyond `backups_in_proton`, oldest
-   by date first (from the Proton entry's `date`).
+3. `pruneProton()` — trash mirrored backups beyond retention, enforced in **two
+   independent buckets** (automatic vs app, classified by `isAutomaticBackup(name)`):
+   `keep_automatic_in_proton` and `keep_app_in_proton`, oldest by date first
+   within each bucket (from the Proton entry's `date`). `selectProtonToPrune(entries,
+   keepAutomatic, keepApp)` is the pure decision fn; `keep<=0` for a bucket keeps
+   all of it, so an app-backup burst can never evict the automatic bucket.
 
 There is **no HA-side pruning in the sync path.** Deleting local backups happens
 only via `pruneHALocalNow()` (the manual **Clean up local backups** button, §8),
-which never deletes a backup that isn't already mirrored in Proton. `force` is
+which never deletes a backup that isn't already mirrored in Proton — the safety
+invariant holds independently in each bucket (`selectHALocalToPrune(haBackups,
+protonSlugs, keepAutomatic, keepApp)`). `force` is
 accepted for API symmetry (the "Sync now" button passes `true`); since the app no
 longer creates backups there is no due-time gate to override.
 
@@ -259,20 +265,32 @@ reports `needsLogin` and the UI drives `auth login`.
   - `selectToUpload(haBackups, remoteEntries)` — **all** HA backups (automatic +
     manual) whose slug isn't already present in Proton (dedup by slug; the slug
     set is parsed from the Proton filenames via `slugFromRemoteName`).
-  - `selectProtonToPrune(entries, keep)` — any `.tar` beyond `keep`, sorted by
-    the Proton entry's `date` (newest kept). `keep <= 0` = keep all.
-  - `selectHALocalToPrune(haBackups, protonSlugs, keep)` — HA backups beyond the
-    newest `keep`, oldest first by `date`, **filtered to slugs confirmed present
-    in `protonSlugs`**. `keep <= 0` = delete nothing. **SAFETY: it can never
-    return a slug that isn't in `protonSlugs`** — an un-mirrored backup is never
-    selected for deletion, no matter its age. Accepts a `Set` or array.
+  - `isAutomaticBackup(name)` — `/^Automatic backup/i.test(name)`; splits backups
+    into the **automatic** bucket (HA's scheduled full backups) vs the **app**
+    bucket (per-add-on backups, manual snapshots). Works on both an HA backup
+    `name` and a Proton remote filename (the trailing ` (slug).tar` can't affect a
+    `^`-anchored match; `sanitizeName` preserves the leading text).
+  - `selectProtonToPrune(entries, keepAutomatic, keepApp)` — partitions the `.tar`
+    entries into the two buckets by `isAutomaticBackup`; within each, sorts by the
+    Proton entry's `date` (newest kept) and returns everything beyond that bucket's
+    keep. `keep <= 0` for a bucket = keep all of it, so an app-backup burst can
+    never evict the automatic bucket.
+  - `selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keepApp)` — same
+    two-bucket partition; per bucket, HA backups beyond the newest `keep`, oldest
+    first by `date`, **filtered to slugs confirmed present in `protonSlugs`**.
+    `keep <= 0` for a bucket = delete nothing there. **SAFETY: it can never return
+    a slug that isn't in `protonSlugs`, in either bucket** — an un-mirrored backup
+    is never selected for deletion, no matter its age. Accepts a `Set` or array.
+  - `getConfig()` — the effective config for the UI Settings card; the backup
+    password is **never** exposed, only `backupPasswordSet: boolean`.
   - Helpers `isOurRemoteFile` (now just `name.endsWith('.tar')`) / `sanitizeName`
     / `remoteNameFor` / `slugFromRemoteName` are type-guarded (a non-string
     `name` must not crash — regression covered by tests).
 - `pruneHALocalNow()` wraps `selectHALocalToPrune` with I/O: it lists both sides,
   deletes the selected slugs, and returns `{deleted, skippedNotInProton}` (the
-  skipped count = candidates beyond `keep` that aren't yet in Proton). It is
-  **manual only** (the "Clean up local backups" button) and never runs in a sync.
+  skipped count = per-bucket candidates beyond `keep` that aren't yet in Proton).
+  It is **manual only** (the "Clean up local backups" button) and never runs in a
+  sync.
 - Proton retention runs automatically each sync; **HA-local deletion is manual
   and only ever removes backups already mirrored to Proton.**
 
@@ -319,14 +337,18 @@ self-contained HTML page plus JSON endpoints. Endpoints:
 - `POST /api/delete` — `orchestrator.deleteProtonBackup(body.name)`.
 - `GET`/`POST /api/log-level` — read/set the runtime log level.
 
-`/api/status` also carries `backupsInHA` so the UI can disable **Clean up local
-backups** (and word the confirm) when `backups_in_ha` is 0, and `stats` (mirror
-model: `haCount`/`haSizeBytes` = all HA backups; `protonCount`/`protonSizeBytes` =
-mirrored).
+`/api/status` also carries `settings` (`orchestrator.getConfig()` — the effective
+config with the password exposed only as the boolean `backupPasswordSet`) so the UI
+can render the read-only **Settings** card and disable **Clean up local backups**
+(and word the confirm) when **both** `keepAutomaticInHA` and `keepAppInHA` are 0.
+It also carries `stats` (mirror model: `haCount`/`haSizeBytes` = all HA backups;
+`protonCount`/`protonSizeBytes` = mirrored; plus per-bucket
+`haAutomaticCount`/`haAppCount` and `protonAutomaticCount`/`protonAppCount`).
 
-The page polls `/api/status` every 5 s. The **status** and **statistics** cards
-sit in a responsive `.grid` (two columns ≥720px, one below); the rest of the page
-is the Connect/Connected cards, a **Sync now** + **Clean up local backups** card,
+The page polls `/api/status` every 5 s. The **status**, **statistics**, and
+**settings** cards sit in a responsive `.grid` (two columns ≥720px, one below); the
+rest of the page is the Connect/Connected cards, a **Sync now** + **Clean up local
+backups** card,
 and a table of Proton backups (sorted by `date`) with Restore/Delete actions. The
 status card shows a connection badge plus a live **Syncing…** badge (animated
 spinner + the `activity` step) and a progress bar (determinate from `progress`,
@@ -371,8 +393,9 @@ values with `bashio::config.has_value` to avoid the literal string `null`), and
 the reader (`main.mjs` / `orchestrator.mjs`). `ingress_port: 8099` in
 `config.yaml` must equal `export PORT=8099` in `run.sh`.
 
-Env vars: `DRIVE_FOLDER`, `BACKUP_INTERVAL_HOURS`, `BACKUPS_IN_PROTON`,
-`BACKUPS_IN_HA`, `BACKUP_PASSWORD`, `LOG_LEVEL`, plus `PORT`,
+Env vars: `DRIVE_FOLDER`, `BACKUP_INTERVAL_HOURS`, `KEEP_AUTOMATIC_IN_PROTON`,
+`KEEP_APP_IN_PROTON`, `KEEP_AUTOMATIC_IN_HA`, `KEEP_APP_IN_HA`,
+`BACKUP_PASSWORD`, `LOG_LEVEL`, plus `PORT`,
 `DATA_DIR`, `SUPERVISOR_TOKEN` (HA-provided), and the CLI's
 `PROTON_DRIVE_CREDENTIALS_STORE` / `XDG_DATA_HOME` / `PROTON_DRIVE_BIN`
 (set in `run.sh`). `STAGING_DIR` is an **optional** override (not a `config.yaml`
