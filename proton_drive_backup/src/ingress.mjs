@@ -85,6 +85,9 @@ async function buildStatus() {
         lastSync: status.lastSync,
         lastError: status.lastError || backupsError,
         nextSyncEpoch: status.nextSyncEpoch,
+        syncing: status.syncing,
+        activity: status.activity,
+        progress: status.progress,
         backups,
     };
 }
@@ -116,6 +119,19 @@ function renderPage() {
   select { font-size: .85rem; border: 1px solid #ccc; border-radius: 4px; padding: .15rem .35rem; background: #fff; cursor: pointer; }
   .signin-link { display: inline-block; margin: .5rem 0; padding: .6rem .9rem; background: #6d4aff; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; word-break: break-all; }
   .hint { color: #666; margin: .25rem 0 .5rem; }
+  .statusline { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .6rem; }
+  .badge { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem .65rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
+  .badge-ok { background: #e6f4ea; color: #2e7d32; }
+  .badge-bad { background: #fdecea; color: #c62828; }
+  .badge-sync { background: #ede7ff; color: #6d4aff; }
+  .badge-idle { background: #eee; color: #666; }
+  .dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; display: inline-block; }
+  .spinner { width: .8rem; height: .8rem; border: 2px solid rgba(109,74,255,.3); border-top-color: #6d4aff; border-radius: 50%; display: inline-block; animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .progress { height: .5rem; background: #eee; border-radius: 999px; overflow: hidden; margin: 0 0 .6rem; }
+  .progress-bar { height: 100%; background: #6d4aff; border-radius: 999px; transition: width .3s ease; }
+  .progress-indet { width: 40%; animation: indet 1.2s ease-in-out infinite; }
+  @keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
 </style>
 </head>
 <body>
@@ -158,8 +174,22 @@ async function refresh() {
     var r = await fetch('api/status');
     var s = await r.json();
     var next = s.nextSyncEpoch ? new Date(s.nextSyncEpoch).toLocaleString() : '—';
+    var syncing = !!s.syncing;
+    var activity = s.activity || (syncing ? 'Syncing…' : 'Idle');
+    var pct = (s.progress && s.progress.total) ? Math.round(s.progress.index / s.progress.total * 100) : null;
+    var progressHtml = '';
+    if (syncing) {
+      progressHtml = '<div class="progress">' +
+        (pct != null ? '<div class="progress-bar" style="width:' + pct + '%"></div>'
+                     : '<div class="progress-bar progress-indet"></div>') +
+        '</div>';
+    }
     document.getElementById('statusCard').innerHTML =
-      '<div class="row"><span>Connection</span><span class="' + (s.connected ? 'ok' : 'bad') + '">' + s.status + '</span></div>' +
+      '<div class="statusline">' +
+        '<span class="badge ' + (s.connected ? 'badge-ok' : 'badge-bad') + '"><span class="dot"></span>' + s.status + '</span>' +
+        '<span class="badge ' + (syncing ? 'badge-sync' : 'badge-idle') + '">' + (syncing ? '<span class="spinner"></span>' : '') + activity + '</span>' +
+      '</div>' +
+      progressHtml +
       '<div class="row"><span>Schedule</span><span>' + (s.schedule || '') + '</span></div>' +
       '<div class="row"><span>Last sync</span><span>' + (s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
       '<div class="row"><span>Next sync</span><span>' + next + '</span></div>' +
@@ -169,6 +199,10 @@ async function refresh() {
         '</select>' +
       '</span></div>' +
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
+
+    var backupNowBtn = document.getElementById('backupNow');
+    backupNowBtn.disabled = syncing;
+    backupNowBtn.textContent = syncing ? 'Syncing…' : 'Back up now';
 
     // Connect / Connected cards.
     document.getElementById('connectedCard').style.display = s.connected ? 'block' : 'none';

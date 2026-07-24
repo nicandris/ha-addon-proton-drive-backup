@@ -44,6 +44,14 @@ test('dateFromRemoteName extracts an ISO date, null on garbage', () => {
     assert.equal(o.dateFromRemoteName(`${PFX} not-a-date.tar`), null);
 });
 
+test('getStatus exposes idle sync fields by default', () => {
+    const s = o.getStatus();
+    assert.equal(s.syncing, false);
+    assert.equal(s.activity, null);
+    assert.equal(s.progress, null);
+    assert.ok('lastSync' in s && 'lastError' in s && 'needsLogin' in s);
+});
+
 test('isNotFoundError is true only for a 404-tagged error', () => {
     assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 404 })), true);
     assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 500 })), false);
