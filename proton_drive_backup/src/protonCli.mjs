@@ -200,6 +200,8 @@ export async function list(remotePath) {
         console.debug(`[protonCli] list "${remotePath}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
         return [];
     }
+    // Log the raw JSON (truncated) so the real shape can be verified/locked down.
+    console.debug(`[protonCli] list "${remotePath}" raw: ${res.stdout.slice(0, 600).replace(/\s+/g, ' ')}`);
     try {
         const parsed = JSON.parse(res.stdout);
         // Tolerate: [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
@@ -214,12 +216,17 @@ export async function list(remotePath) {
             console.warn(`[protonCli] list "${remotePath}": JSON had no recognisable array — returning []`);
             return [];
         }
-        return arr.map((e) => ({
-            name: e.name ?? e.Name ?? e.fileName ?? '',
-            type: e.type ?? e.Type,
-            uid: e.uid ?? e.uID ?? e.id,
-            size: e.size ?? e.Size,
-        })).filter((e) => e.name);
+        return arr.map((e) => {
+            // Entries may be plain strings (bare filenames) or objects with a
+            // name field under various casings; coerce to a string either way.
+            const rawName = (typeof e === 'string') ? e : (e?.name ?? e?.Name ?? e?.fileName);
+            return {
+                name: typeof rawName === 'string' ? rawName : '',
+                type: e?.type ?? e?.Type,
+                uid: e?.uid ?? e?.uID ?? e?.id,
+                size: e?.size ?? e?.Size,
+            };
+        }).filter((e) => e.name);
     } catch (err) {
         console.warn(`[protonCli] list "${remotePath}": JSON parse failed (${err.message}) — returning []`);
         return [];
