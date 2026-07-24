@@ -61,23 +61,6 @@ export async function hostInfo() {
     return supervisorJson('GET', '/host/info');
 }
 
-export async function createBackup({ name, password, full = true } = {}) {
-    const body = { name, compressed: true, background: false };
-    if (password) body.password = password;
-    console.debug(`[supervisor] createBackup: name="${name}" full=${full} password=${password ? 'set' : 'none'}`);
-    let data;
-    if (full) {
-        data = await supervisorJson('POST', '/backups/new/full', body);
-    } else {
-        data = await supervisorJson('POST', '/backups/new/partial', {
-            ...body,
-            homeassistant: true,
-        });
-    }
-    console.debug(`[supervisor] createBackup: created slug=${data.slug}`);
-    return data.slug;
-}
-
 export async function downloadBackup(slug, destPath) {
     console.debug(`[supervisor] downloadBackup: slug=${slug} → ${destPath}`);
     const resp = await fetch(`${BASE_URL}/backups/${slug}/download`, {

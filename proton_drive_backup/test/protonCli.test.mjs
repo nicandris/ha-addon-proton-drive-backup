@@ -92,7 +92,7 @@ test('list() parses a bare array', async () => {
     ]);
     const r = await cli.list('/my-files/x');
     assert.equal(r.length, 2);
-    assert.deepEqual(r[0], { name: 'a.tar', type: 'file', uid: 'U1', size: 10 });
+    assert.deepEqual(r[0], { name: 'a.tar', type: 'file', uid: 'U1', size: 10, date: undefined });
 });
 
 test('list() tolerates a nested array under items/entries/data/children', async () => {
@@ -144,7 +144,34 @@ test('list() extracts name from a Result object and size from activeRevision (re
         type: 'file',
         uid: 'u1',
         size: 4096,
+        date: undefined,
     });
+});
+
+test('list() extracts date from modificationTime, falling back to creationTime', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        {
+            name: { ok: true, value: 'A (s1).tar' },
+            type: 'file',
+            activeRevision: { ok: true, value: { claimedSize: 10 } },
+            modificationTime: '2026-07-24T03:00:00.000Z',
+            creationTime: '2026-07-24T01:00:00.000Z',
+        },
+        {
+            name: { ok: true, value: 'B (s2).tar' },
+            type: 'file',
+            creationTime: '2026-07-24T02:00:00.000Z', // no modificationTime → fall back
+        },
+        {
+            name: { ok: true, value: 'C (s3).tar' },
+            type: 'file', // neither timestamp → undefined
+        },
+    ]);
+    const r = await cli.list('/my-files/x');
+    assert.equal(r.find((e) => e.name === 'A (s1).tar').date, '2026-07-24T03:00:00.000Z');
+    assert.equal(r.find((e) => e.name === 'B (s2).tar').date, '2026-07-24T02:00:00.000Z');
+    assert.equal(r.find((e) => e.name === 'C (s3).tar').date, undefined);
 });
 
 test('list() drops entries whose name Result failed (ok:false)', async () => {

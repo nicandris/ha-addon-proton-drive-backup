@@ -45,8 +45,8 @@ function sendJson(res, status, obj) {
 
 function scheduleSummary() {
     const hours = parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0;
-    if (hours <= 0) return 'Automatic backups disabled';
-    return `Every ${hours} hour${hours === 1 ? '' : 's'}`;
+    if (hours <= 0) return 'On boot + manual only';
+    return `Every ${hours} hour${hours === 1 ? '' : 's'} (+ boot)`;
 }
 
 async function buildStatus() {
@@ -69,21 +69,21 @@ async function buildStatus() {
     }
 
     // Backup statistics (best-effort — never let a stats failure break status).
+    // Mirror model: "In Home Assistant" counts ALL HA backups; "In Proton Drive"
+    // counts the mirrored ones.
     let stats = null;
     try {
         const haBackups = await supervisor.listBackups();
-        const ours = haBackups.filter(orchestrator.isOurHABackup);
-        const haSizeMB = ours.reduce((s, b) => s + (Number(b.size) || 0), 0);
+        const haSizeMB = haBackups.reduce((s, b) => s + (Number(b.size) || 0), 0);
         const protonSizeBytes = (backups || []).reduce((s, b) => s + (Number(b.size) || 0), 0);
         let host = null;
         try { host = await supervisor.hostInfo(); } catch { /* disk stats optional */ }
         const gb = (v) => (typeof v === 'number' ? Math.round(v * 1024 * 1024 * 1024) : null);
-        const dates = [...(backups || []).map((b) => b.date), ...ours.map((b) => b.date)]
+        const dates = [...(backups || []).map((b) => b.date), ...haBackups.map((b) => b.date)]
             .filter(Boolean).map((d) => new Date(d).getTime()).filter((n) => !isNaN(n));
         stats = {
-            haCount: ours.length,
+            haCount: haBackups.length,
             haSizeBytes: Math.round(haSizeMB * 1024 * 1024),
-            haIgnored: Math.max(0, haBackups.length - ours.length),
             protonCount: (backups || []).length,
             protonSizeBytes,
             hostDiskFreeBytes: gb(host?.disk_free),
@@ -109,6 +109,7 @@ async function buildStatus() {
         loginError: state.loginError,
         logLevel: getLogLevel(),
         schedule: scheduleSummary(),
+        backupsInHA: parseInt(process.env.BACKUPS_IN_HA || '0', 10) || 0,
         lastSync: status.lastSync,
         lastError: status.lastError || backupsError,
         nextSyncEpoch: status.nextSyncEpoch,
@@ -131,6 +132,9 @@ function renderPage() {
   body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #f5f6f8; color: #1c1c1c; }
   h1 { font-size: 1.4rem; }
   .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
+  .grid > .card { margin-bottom: 0; }
+  @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
   .row { display: flex; justify-content: space-between; padding: .25rem 0; }
   .row span:first-child { color: #666; }
   .ok { color: #2e7d32; font-weight: 600; }
@@ -179,7 +183,10 @@ function renderPage() {
 </head>
 <body>
 <h1>Proton Drive Backup</h1>
-<div class="card" id="statusCard">Loading…</div>
+<div class="grid">
+  <div class="card" id="statusCard">Loading…</div>
+  <div class="card" id="statsCard" style="display:none"></div>
+</div>
 <div class="card" id="connectCard" style="display:none">
   <h2 style="font-size:1.1rem">Connect to Proton Drive</h2>
   <p class="hint" id="connectHint">Sign in to Proton Drive to start backing up. No password is stored here — you sign in through Proton in your browser.</p>
@@ -194,9 +201,10 @@ function renderPage() {
   <button class="ghost" id="disconnectBtn">Disconnect</button>
 </div>
 <div class="card">
-  <button class="primary" id="backupNow">Back up now</button>
+  <button class="primary" id="syncNow">Sync now</button>
+  <button class="ghost" id="pruneHA">Clean up local backups</button>
+  <p class="hint" id="pruneHint" style="margin:.5rem 0 0"></p>
 </div>
-<div class="card" id="statsCard" style="display:none"></div>
 <div class="card">
   <h2 style="font-size:1.1rem">Proton backups</h2>
   <table>
@@ -213,6 +221,7 @@ function fmtSize(bytes) {
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return n.toFixed(1) + ' ' + units[i];
 }
+var backupsInHA = 0;
 async function refresh() {
   try {
     var r = await fetch('api/status');
@@ -244,9 +253,17 @@ async function refresh() {
       '</span></div>' +
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
 
-    var backupNowBtn = document.getElementById('backupNow');
-    backupNowBtn.disabled = syncing;
-    backupNowBtn.textContent = syncing ? 'Syncing…' : 'Back up now';
+    var syncBtn = document.getElementById('syncNow');
+    syncBtn.disabled = syncing;
+    syncBtn.textContent = syncing ? 'Syncing…' : 'Sync now';
+
+    backupsInHA = s.backupsInHA || 0;
+    var retentionOff = backupsInHA <= 0;
+    var pruneBtn = document.getElementById('pruneHA');
+    pruneBtn.disabled = syncing || retentionOff;
+    document.getElementById('pruneHint').textContent = retentionOff
+      ? 'Local clean-up is off (backups_in_ha = 0). Set it to keep only the newest N in Home Assistant.'
+      : 'Deletes local HA backups beyond the newest ' + backupsInHA + ' — only ones already copied to Proton.';
 
     var statsCard = document.getElementById('statsCard');
     if (s.stats) {
@@ -254,15 +271,14 @@ async function refresh() {
       statsCard.style.display = 'block';
       statsCard.innerHTML =
         '<h2 style="font-size:1.1rem;margin-top:0">Backup statistics</h2>' +
-        '<div class="row"><span>In Home Assistant</span><span>' + st.haCount + ' (' + fmtSize(st.haSizeBytes) + ')' +
-          (st.haIgnored ? ' · ' + st.haIgnored + ' other' : '') + '</span></div>' +
+        '<div class="row"><span>In Home Assistant</span><span>' + st.haCount + ' (' + fmtSize(st.haSizeBytes) + ')</span></div>' +
         '<div class="row"><span>In Proton Drive</span><span>' + st.protonCount + ' (' + fmtSize(st.protonSizeBytes) + ')</span></div>' +
         (st.hostDiskFreeBytes != null
           ? '<div class="row"><span>Host disk free</span><span>' + fmtSize(st.hostDiskFreeBytes) +
             (st.hostDiskTotalBytes ? ' / ' + fmtSize(st.hostDiskTotalBytes) : '') + '</span></div>'
           : '') +
         '<div class="row"><span>Last backup</span><span>' + (st.lastBackup ? new Date(st.lastBackup).toLocaleString() : '—') + '</span></div>' +
-        '<div class="row"><span>Next backup</span><span>' + next + '</span></div>';
+        '<div class="row"><span>Next sync</span><span>' + next + '</span></div>';
     } else {
       statsCard.style.display = 'none';
     }
@@ -285,7 +301,7 @@ async function refresh() {
     connectBtn.disabled = !!s.loginInProgress;
     connectBtn.textContent = s.loginInProgress ? 'Waiting for sign-in…' : (s.loginUrl ? 'Restart sign-in' : 'Connect');
 
-    var rows = (s.backups || []).slice().sort(function(a,b){ return String(b.name).localeCompare(String(a.name)); });
+    var rows = (s.backups || []).slice().sort(function(a,b){ return (new Date(b.date || 0)) - (new Date(a.date || 0)); });
     var tbody = document.getElementById('backupRows');
     if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
     tbody.innerHTML = rows.map(function(b){
@@ -312,7 +328,24 @@ async function act(path, name, confirmMsg) {
   } catch (e) { alert('Error: ' + e); }
   refresh();
 }
-document.getElementById('backupNow').onclick = function(){ act('api/backup-now', null, 'Start a backup now?'); };
+document.getElementById('syncNow').onclick = async function(){
+  var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
+  try {
+    await fetch('api/sync-now', { method: 'POST' });
+  } catch (e) { alert('Error: ' + e); }
+  refresh();
+};
+document.getElementById('pruneHA').onclick = async function(){
+  if (!confirm('Delete local HA backups beyond the newest ' + backupsInHA + ' that are already copied to Proton?')) return;
+  var btn = this; btn.disabled = true;
+  try {
+    var r = await fetch('api/prune-ha', { method: 'POST' });
+    var j = await r.json();
+    if (!j.ok) alert('Error: ' + (j.error || 'unknown'));
+    else alert('Deleted ' + j.deleted + ', skipped ' + j.skippedNotInProton + ' not yet in Proton');
+  } catch (e) { alert('Error: ' + e); }
+  refresh();
+};
 document.getElementById('connectBtn').onclick = async function(){
   var btn = this; btn.disabled = true;
   document.getElementById('connectError').textContent = '';
@@ -443,10 +476,23 @@ async function handle(req, res) {
         return;
     }
 
-    if (method === 'POST' && path === '/api/backup-now') {
-        // Kick off but don't block the response on full completion.
-        orchestrator.runSync().catch((err) => console.error(`[ingress] backup-now: ${err.message}`));
+    if (method === 'POST' && path === '/api/sync-now') {
+        // Upload existing HA backups now. Kick off but don't block the response
+        // on full completion.
+        orchestrator.runSync(true).catch((err) => console.error(`[ingress] sync-now: ${err.message}`));
         sendJson(res, 200, { ok: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/prune-ha') {
+        // Manual local clean-up: delete local HA backups beyond the newest N,
+        // but only ones confirmed present in Proton. Await so the UI can report.
+        try {
+            const result = await orchestrator.pruneHALocalNow();
+            sendJson(res, 200, { ok: true, ...result });
+        } catch (err) {
+            sendJson(res, 500, { ok: false, error: err.message });
+        }
         return;
     }
 

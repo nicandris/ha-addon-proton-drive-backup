@@ -7,6 +7,14 @@
 
 ## Latest release highlights
 
+- **0.3.0** — **New mirror model.** The add-on no longer creates backups; it now
+  **mirrors Home Assistant's own backups** (automatic + manual) to Proton Drive,
+  deduping by the HA backup slug (remote name `<name> (<slug>).tar`). "Back up
+  now" became **Sync now**; a new **Clean up local backups** button deletes local
+  HA backups beyond the newest `backups_in_ha` **only if already copied to
+  Proton** (never deletes an un-mirrored backup). Proton retention now sorts by
+  the Proton entry's date. Two-column Web UI (status + stats side by side) with
+  dark mode preserved. The `full_backup` option was removed.
 - **0.2.4** — Fixed "No backups in Proton Drive" and duplicate re-uploads: the
   CLI serialises each `filesystem list` entry's `name` as a `Result` object
   (`{ ok, value }`) and the size at `activeRevision.value.claimedSize`; the

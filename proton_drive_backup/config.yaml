@@ -1,7 +1,7 @@
 name: Proton Drive Backup
-version: "0.2.5"
+version: "0.3.0"
 slug: proton_drive_backup
-description: Automatically back up Home Assistant to Proton Drive using the official Proton Drive CLI.
+description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive
 arch:
   - amd64
@@ -18,7 +18,6 @@ options:
   backup_interval_hours: 24
   backups_in_proton: 10
   backups_in_ha: 4
-  full_backup: true
   backup_password: ""
   log_level: info
 schema:
@@ -26,6 +25,5 @@ schema:
   backup_interval_hours: int(0,)
   backups_in_proton: int(0,)
   backups_in_ha: int(0,)
-  full_backup: bool
   backup_password: password?
   log_level: list(trace|debug|info|notice|warning|error|fatal)
