@@ -1,8 +1,10 @@
 #!/usr/bin/with-contenv bashio
 export DRIVE_FOLDER="$(bashio::config 'drive_folder')"
 export BACKUP_INTERVAL_HOURS="$(bashio::config 'backup_interval_hours')"
-export BACKUPS_IN_PROTON="$(bashio::config 'backups_in_proton')"
-export BACKUPS_IN_HA="$(bashio::config 'backups_in_ha')"
+export KEEP_AUTOMATIC_IN_PROTON="$(bashio::config 'keep_automatic_in_proton' 10)"
+export KEEP_APP_IN_PROTON="$(bashio::config 'keep_app_in_proton' 10)"
+export KEEP_AUTOMATIC_IN_HA="$(bashio::config 'keep_automatic_in_ha' 0)"
+export KEEP_APP_IN_HA="$(bashio::config 'keep_app_in_ha' 0)"
 if bashio::config.has_value 'backup_password'; then
     export BACKUP_PASSWORD="$(bashio::config 'backup_password')"
 else
