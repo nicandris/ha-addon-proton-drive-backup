@@ -88,6 +88,19 @@ export function isNotFoundError(err) {
     return err?.status === 404;
 }
 
+/**
+ * Is this a "Home Assistant is busy" error? HA rejects a new backup while it's
+ * already backing up / not in a running state (e.g. right after a restart, or
+ * when another backup is finalizing) with "freeze" / "system is not running" /
+ * "blocked from execution". This is transient, not a real failure.
+ */
+export function isBusyError(err) {
+    const m = (err?.message || String(err)).toLowerCase();
+    return m.includes('freeze')
+        || m.includes('not running')
+        || m.includes('blocked from execution');
+}
+
 /** Resolve (and create if needed) the remote backup folder under /my-files. */
 async function remoteFolder() {
     const { driveFolder } = cfg();
@@ -344,8 +357,15 @@ export async function runSync() {
                 await supervisor.createBackup({ name, password: backupPassword, full: fullBackup });
                 console.debug('[orchestrator] HA backup created successfully');
             } catch (err) {
-                state.lastError = `Backup creation failed: ${describeError(err)}`;
-                console.error(`[orchestrator] ${state.lastError}`);
+                if (isBusyError(err)) {
+                    // HA is mid-backup / not in a running state — transient. Skip
+                    // creating one this cycle (don't raise a scary error) and
+                    // carry on syncing any existing backups.
+                    console.warn('[orchestrator] Home Assistant is busy (a backup/operation is in progress) — skipping backup creation this cycle; syncing existing backups');
+                } else {
+                    state.lastError = `Backup creation failed: ${describeError(err)}`;
+                    console.error(`[orchestrator] ${state.lastError}`);
+                }
             }
         } else {
             console.debug('[orchestrator] runSync: interval=0, skipping backup creation (upload-only mode)');

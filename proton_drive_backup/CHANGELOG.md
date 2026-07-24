@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.5
+
+- **Backup statistics panel.** The Web UI now shows counts and total sizes for
+  backups in Home Assistant and in Proton Drive, host disk free, and the last /
+  next backup times. (Proton account quota and email are not shown — the CLI
+  exposes no account/usage command.)
+- **Dark mode.** The UI follows your system/browser theme via
+  `prefers-color-scheme`, so it matches a dark Home Assistant.
+- **Graceful handling when Home Assistant is busy.** A backup-creation attempt
+  rejected with `system is not running` / `freeze` / `blocked from execution`
+  (e.g. right after a restart, or while another backup runs) is now a logged
+  skip for that cycle instead of a red error; existing backups still sync.
+
 ## 0.2.4
 
 - **Fix "No backups in Proton Drive" (and duplicate re-uploads).** Proton's CLI
