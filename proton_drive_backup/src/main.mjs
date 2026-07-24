@@ -23,7 +23,6 @@ function readConfig() {
         intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0,
         backupsInProton: parseInt(process.env.BACKUPS_IN_PROTON || '0', 10) || 0,
         backupsInHA: parseInt(process.env.BACKUPS_IN_HA || '0', 10) || 0,
-        fullBackup: (process.env.FULL_BACKUP || 'true').toLowerCase() !== 'false',
         logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
         port: parseInt(process.env.PORT || '8099', 10),
         dataDir: process.env.DATA_DIR || '/data',
@@ -36,9 +35,8 @@ async function main() {
 
     console.log('Starting Proton Drive Backup add-on');
     console.log(
-        `Config: folder="${config.driveFolder}", interval=${config.intervalHours}h, ` +
-            `proton retention=${config.backupsInProton}, HA retention=${config.backupsInHA}, ` +
-            `full=${config.fullBackup}`,
+        `Config: folder="${config.driveFolder}", check interval=${config.intervalHours}h, ` +
+            `proton retention=${config.backupsInProton}, HA manual retention=${config.backupsInHA}`,
     );
     console.debug(`[main] Full config: ${JSON.stringify(config)}`);
 

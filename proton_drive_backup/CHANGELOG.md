@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.3.0
+
+- **New model: mirror Home Assistant's own backups to Proton Drive** (like the
+  Google Drive backup add-on). The add-on **no longer creates backups**. It
+  uploads **every** backup that already exists in Home Assistant — automatic and
+  manual alike — that isn't already in Proton Drive. Make backups however you
+  like in Home Assistant (the built-in automatic backup, manual snapshots, other
+  add-ons); this add-on copies them offsite.
+- **Dedup by the HA backup slug.** Each backup is stored remotely as
+  `<name> (<slug>).tar` (e.g. `Automatic backup 2026.7.3 (a1b2c3d4).tar`); the
+  `(slug)` suffix is the backup's stable, unique id, so re-syncing never
+  re-uploads a backup that's already there.
+- **"Sync now"** (renamed from "Back up now") uploads any existing HA backups
+  not yet in Proton. It also runs on boot and on the `backup_interval_hours`
+  check interval.
+- **"Clean up local backups"** (new, manual-only button). Deletes local Home
+  Assistant backups beyond the newest `backups_in_ha`, but **only** ones already
+  copied to Proton — it will **never** delete a backup that isn't safely offsite.
+  Reports how many were deleted and how many were skipped (not yet mirrored).
+  Local clean-up is never automatic.
+- **Proton retention** (`backups_in_proton`) still runs automatically each sync,
+  now sorting by each Proton entry's date (the filenames are no longer
+  timestamp-sortable).
+- **Two-column Web UI** on wide screens (status + statistics side by side,
+  collapsing to one column on narrow screens) to cut wasted whitespace; dark
+  mode preserved. Statistics now read "In Home Assistant" (all backups) and "In
+  Proton Drive" (mirrored).
+- **Removed** the `full_backup` option (the add-on no longer creates backups, so
+  full-vs-partial is decided by whatever creates the backup in Home Assistant).
+  `backup_password` is now used only to decrypt encrypted backups on **restore**.
+
 ## 0.2.5
 
 - **Backup statistics panel.** The Web UI now shows counts and total sizes for

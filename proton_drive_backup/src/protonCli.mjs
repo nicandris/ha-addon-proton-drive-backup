@@ -192,7 +192,7 @@ export async function ensureFolder(remotePath) {
  * an object with a nested array; on ANY parse failure we log and return [].
  *
  * @param {string} remotePath
- * @returns {Promise<Array<{name:string, type?:string, uid?:string, size?:number}>>}
+ * @returns {Promise<Array<{name:string, type?:string, uid?:string, size?:number, date?:string}>>}
  */
 export async function list(remotePath) {
     const res = await run(['filesystem', 'list', remotePath, '-j']);
@@ -232,11 +232,20 @@ export async function list(remotePath) {
             const size = (rev && rev.ok && rev.value && typeof rev.value.claimedSize === 'number')
                 ? rev.value.claimedSize
                 : (typeof flatSize === 'number' ? flatSize : undefined);
+            // Timestamps come through as plain ISO strings (not Result-wrapped).
+            // Retention now sorts by date, so surface it: prefer modificationTime,
+            // else creationTime.
+            const modTime = e?.modificationTime ?? e?.ModificationTime;
+            const createTime = e?.creationTime ?? e?.CreationTime;
+            const date = (typeof modTime === 'string' && modTime)
+                ? modTime
+                : (typeof createTime === 'string' && createTime ? createTime : undefined);
             return {
                 name,
                 type: e?.type ?? e?.Type,
                 uid: e?.uid ?? e?.id,
                 size,
+                date,
             };
         }).filter((e) => e.name);
     } catch (err) {
