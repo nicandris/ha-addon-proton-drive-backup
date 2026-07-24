@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.0
+
+- **Switched to Proton's official first-party `proton-drive` CLI.** The previous
+  releases used the pre-release Drive SDK plus a hand-rolled SRP/2FA/crypto auth
+  against Proton's account API — a path Proton permanently blocks for
+  third-party clients (Sentinel `Code 2028`). The add-on now shells out to the
+  official CLI, which sidesteps that gating.
+- **Auth is now a browser sign-in.** Click **Connect** in the Web UI; the app
+  shows a Proton sign-in URL you open on any device (phone or PC). No email,
+  password, or 2FA code is entered into or stored by the add-on, and there is no
+  session encryption to manage — the CLI persists its own session under `/data`,
+  so it survives restarts.
+- **Removed** the `proton_email` / `proton_password` options and all
+  2FA / human-verification UI and endpoints.
+- **Backups are now identified by filename** (`Proton Drive Backup <ISO>.tar`),
+  since the CLI has no metadata API. Retention sorts by that timestamped name.
+- **Architecture limited to `amd64` and `aarch64`** — Proton ships no
+  armv7/i386 musl build of the CLI.
+
 ## 0.1.11
 
 - **Auth correctness fixes** verified against ProtonMail/WebClients and

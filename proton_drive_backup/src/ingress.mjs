@@ -3,19 +3,27 @@
  *
  * Home Assistant ingress handles authentication, so this server is unauthenticated.
  * It serves a small self-contained HTML page plus a handful of JSON endpoints
- * that the page calls to show status and trigger sync / restore / delete.
+ * that the page calls to show status and drive connect / sync / restore / delete.
+ *
+ * Authentication is a browser sign-in: POST /api/connect starts the CLI's
+ * `auth login`, which prints a sign-in URL; the UI surfaces that URL as a
+ * clickable link the user opens on any device, and the connection flips to
+ * "connected" once the CLI completes sign-in in the background.
  */
 
 import { createServer } from 'node:http';
 
-import * as proton from './protonClient.mjs';
+import * as cli from './protonCli.mjs';
 import * as orchestrator from './orchestrator.mjs';
-import { getAuthState, submitTwoFactorCode, submitHumanVerification, retryNow } from './protonAuth.mjs';
 import { getLogLevel, setLogLevel } from './logger.mjs';
 
-function driveFolder() {
-    return process.env.DRIVE_FOLDER || 'Home Assistant Backups';
-}
+// UI-facing login state. connected is refreshed from the CLI on each status poll.
+const state = {
+    loginUrl: null, // sign-in URL from the CLI, shown to the user
+    loginInProgress: false, // an auth login child is running
+    loginError: null, // last sign-in failure text
+    connected: false, // last-observed CLI session state
+};
 
 async function readBody(req) {
     const chunks = [];
@@ -41,44 +49,41 @@ function scheduleSummary() {
 }
 
 async function buildStatus() {
-    const auth = getAuthState();
     const status = orchestrator.getStatus();
+    const connected = await cli.isConnected();
+    state.connected = connected;
+    if (connected) {
+        state.loginUrl = null;
+        state.loginError = null;
+    }
+
     let backups = [];
     let backupsError = null;
-    // Only the connected client can list backups; skip the call (and its
-    // inevitable error) while we're waiting for a 2FA code or disconnected.
-    if (auth.connected) {
+    if (connected) {
         try {
-            const raw = await proton.listBackups(driveFolder());
-            backups = raw.map((b) => ({ linkId: b.linkId, ...b.metadata }));
+            backups = await orchestrator.listProtonBackups();
         } catch (err) {
             backupsError = err.message;
         }
     }
-    const statusLabel = auth.connected
+
+    const statusLabel = connected
         ? 'connected'
-        : auth.needsHumanVerification
-          ? 'needs verification'
-          : auth.needsTwoFactor
-            ? 'needs 2FA'
-            : auth.halted
-              ? 'halted'
-              : 'disconnected';
+        : (state.loginInProgress || state.loginUrl)
+          ? 'awaiting sign-in'
+          : 'disconnected';
+
     return {
         status: statusLabel,
-        needsTwoFactor: auth.needsTwoFactor,
-        needsHumanVerification: auth.needsHumanVerification,
-        hvMethods: auth.hvMethods,
-        hvWebUrl: auth.hvWebUrl,
-        hvExpiresAt: auth.hvExpiresAt,
+        connected,
+        needsLogin: !connected,
+        loginUrl: state.loginUrl,
+        loginInProgress: state.loginInProgress,
+        loginError: state.loginError,
         logLevel: getLogLevel(),
-        halted: auth.halted,
-        hardStop: auth.hardStop,
-        haltAdvice: auth.haltAdvice,
-        email: auth.email,
         schedule: scheduleSummary(),
         lastSync: status.lastSync,
-        lastError: status.lastError || auth.lastError || backupsError,
+        lastError: status.lastError || backupsError,
         nextSyncEpoch: status.nextSyncEpoch,
         backups,
     };
@@ -103,38 +108,31 @@ function renderPage() {
   .primary { background: #6d4aff; color: #fff; }
   .restore { background: #1976d2; color: #fff; }
   .delete { background: #c62828; color: #fff; }
+  .ghost { background: #eee; color: #333; }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; font-size: .9rem; }
+  th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; font-size: .9rem; word-break: break-all; }
   .err { color: #c62828; white-space: pre-wrap; }
   .actions button { margin-right: .35rem; }
   select { font-size: .85rem; border: 1px solid #ccc; border-radius: 4px; padding: .15rem .35rem; background: #fff; cursor: pointer; }
+  .signin-link { display: inline-block; margin: .5rem 0; padding: .6rem .9rem; background: #6d4aff; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; word-break: break-all; }
+  .hint { color: #666; margin: .25rem 0 .5rem; }
 </style>
 </head>
 <body>
 <h1>Proton Drive Backup</h1>
 <div class="card" id="statusCard">Loading…</div>
-<div class="card" id="retryCard" style="display:none">
-  <h2 style="font-size:1.1rem">Connection halted</h2>
-  <p id="retryMsg" style="color:#666;margin:.25rem 0 .25rem;white-space:pre-wrap;word-break:break-word"></p>
-  <p id="retryAdvice" style="color:#1c1c1c;margin:.5rem 0 .75rem;white-space:pre-wrap"></p>
-  <button class="primary" id="retryBtn">Retry connection</button>
+<div class="card" id="connectCard" style="display:none">
+  <h2 style="font-size:1.1rem">Connect to Proton Drive</h2>
+  <p class="hint" id="connectHint">Sign in to Proton Drive to start backing up. No password is stored here — you sign in through Proton in your browser.</p>
+  <button class="primary" id="connectBtn">Connect</button>
+  <div id="signinBox" style="display:none">
+    <p class="hint">Open this link on any device (phone or PC) to sign in. Keep this page open — it will switch to "Connected" automatically once you finish.</p>
+    <a class="signin-link" id="signinLink" href="#" target="_blank" rel="noopener">Open on any device to sign in</a>
+  </div>
+  <div class="err" id="connectError" style="margin-top:.5rem"></div>
 </div>
-<div class="card" id="hvCard" style="display:none">
-  <h2 style="font-size:1.1rem">Human verification</h2>
-  <p style="color:#666;margin:.25rem 0 .5rem">
-    Proton is asking for a one-time verification. Complete the challenge below
-    and we'll continue signing in automatically.
-  </p>
-  <p id="hvExpiry" style="color:#b94a48;margin:.25rem 0 .5rem;display:none">The verification challenge may have expired. If submission fails, click "Retry connection" to get a fresh one.</p>
-  <iframe id="hvFrame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups allow-popups-to-escape-sandbox" style="width:100%;min-height:420px;border:1px solid #ddd;border-radius:6px;background:#fff"></iframe>
-  <div class="err" id="hvError" style="margin-top:.5rem"></div>
-</div>
-<div class="card" id="twoFactorCard" style="display:none">
-  <h2 style="font-size:1.1rem">Two-factor authentication</h2>
-  <p style="color:#666;margin:.25rem 0 .75rem">Enter the current 6-digit code from your authenticator app to connect.</p>
-  <input id="twoFactorCode" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="123456" style="padding:.45rem;font-size:1rem;width:7rem;letter-spacing:.2em;border:1px solid #ccc;border-radius:6px;">
-  <button class="primary" id="twoFactorSubmit">Connect</button>
-  <div class="err" id="twoFactorError" style="margin-top:.5rem"></div>
+<div class="card" id="connectedCard" style="display:none">
+  <button class="ghost" id="disconnectBtn">Disconnect</button>
 </div>
 <div class="card">
   <button class="primary" id="backupNow">Back up now</button>
@@ -151,8 +149,6 @@ function fmtSize(bytes) {
   if (bytes == null) return '';
   var n = Number(bytes);
   if (!isFinite(n)) return String(bytes);
-  // HA reports size in MB (float) for backups; show as-is if small, else bytes.
-  if (n < 10000) return n.toFixed(1) + ' MB';
   var units = ['B','KB','MB','GB','TB']; var i = 0;
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return n.toFixed(1) + ' ' + units[i];
@@ -163,7 +159,7 @@ async function refresh() {
     var s = await r.json();
     var next = s.nextSyncEpoch ? new Date(s.nextSyncEpoch).toLocaleString() : '—';
     document.getElementById('statusCard').innerHTML =
-      '<div class="row"><span>Connection</span><span class="' + (s.status === 'connected' ? 'ok' : 'bad') + '">' + s.status + (s.email ? ' (' + s.email + ')' : '') + '</span></div>' +
+      '<div class="row"><span>Connection</span><span class="' + (s.connected ? 'ok' : 'bad') + '">' + s.status + '</span></div>' +
       '<div class="row"><span>Schedule</span><span>' + (s.schedule || '') + '</span></div>' +
       '<div class="row"><span>Last sync</span><span>' + (s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
       '<div class="row"><span>Next sync</span><span>' + next + '</span></div>' +
@@ -173,28 +169,26 @@ async function refresh() {
         '</select>' +
       '</span></div>' +
       (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
-    document.getElementById('twoFactorCard').style.display = s.needsTwoFactor ? 'block' : 'none';
-    document.getElementById('retryCard').style.display = s.halted ? 'block' : 'none';
-    if (s.halted) {
-      document.getElementById('retryMsg').textContent = s.lastError || 'Login failed.';
-      document.getElementById('retryAdvice').textContent = s.haltAdvice || '';
-    }
-    var hvCard = document.getElementById('hvCard');
-    var hvFrame = document.getElementById('hvFrame');
-    if (s.needsHumanVerification && s.hvWebUrl) {
-      hvCard.style.display = 'block';
-      // verify.proton.me sends RESIZE postMessages only when embed=true is
-      // passed; we also need it so the captcha lays out for an iframe context.
-      var src = s.hvWebUrl + (s.hvWebUrl.indexOf('?') === -1 ? '?' : '&') + 'embed=true';
-      if (hvFrame.getAttribute('src') !== src) hvFrame.setAttribute('src', src);
-      var hvExpiry = document.getElementById('hvExpiry');
-      var expired = s.hvExpiresAt && new Date(s.hvExpiresAt) < new Date();
-      hvExpiry.style.display = expired ? 'block' : 'none';
+
+    // Connect / Connected cards.
+    document.getElementById('connectedCard').style.display = s.connected ? 'block' : 'none';
+    document.getElementById('connectCard').style.display = s.connected ? 'none' : 'block';
+    var signinBox = document.getElementById('signinBox');
+    var signinLink = document.getElementById('signinLink');
+    var connectErr = document.getElementById('connectError');
+    connectErr.textContent = s.loginError || '';
+    if (!s.connected && s.loginUrl) {
+      signinBox.style.display = 'block';
+      if (signinLink.getAttribute('href') !== s.loginUrl) signinLink.setAttribute('href', s.loginUrl);
     } else {
-      hvCard.style.display = 'none';
-      hvFrame.removeAttribute('src');
+      signinBox.style.display = 'none';
+      signinLink.setAttribute('href', '#');
     }
-    var rows = (s.backups || []).slice().sort(function(a,b){ return new Date(b.date||0) - new Date(a.date||0); });
+    var connectBtn = document.getElementById('connectBtn');
+    connectBtn.disabled = !!s.loginInProgress;
+    connectBtn.textContent = s.loginInProgress ? 'Waiting for sign-in…' : (s.loginUrl ? 'Restart sign-in' : 'Connect');
+
+    var rows = (s.backups || []).slice().sort(function(a,b){ return String(b.name).localeCompare(String(a.name)); });
     var tbody = document.getElementById('backupRows');
     if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
     tbody.innerHTML = rows.map(function(b){
@@ -202,88 +196,43 @@ async function refresh() {
         '<td>' + (b.name || '') + '</td>' +
         '<td>' + fmtSize(b.size) + '</td>' +
         '<td class="actions">' +
-          '<button class="restore" data-id="' + b.linkId + '">Restore</button>' +
-          '<button class="delete" data-id="' + b.linkId + '">Delete</button>' +
+          '<button class="restore" data-name="' + encodeURIComponent(b.name) + '">Restore</button>' +
+          '<button class="delete" data-name="' + encodeURIComponent(b.name) + '">Delete</button>' +
         '</td></tr>';
     }).join('');
-    tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', btn.dataset.id, 'Restore this backup to Home Assistant?'); }; });
-    tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', btn.dataset.id, 'Delete this backup from Proton Drive?'); }; });
+    tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', decodeURIComponent(btn.dataset.name), 'Restore this backup to Home Assistant?'); }; });
+    tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', decodeURIComponent(btn.dataset.name), 'Delete this backup from Proton Drive?'); }; });
   } catch (e) {
     document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + e + '</span>';
   }
 }
-async function act(path, linkId, confirmMsg) {
+async function act(path, name, confirmMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   try {
-    var r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ linkId: linkId }) });
+    var r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) });
     var j = await r.json();
     if (!j.ok) alert('Error: ' + (j.error || 'unknown'));
   } catch (e) { alert('Error: ' + e); }
   refresh();
 }
 document.getElementById('backupNow').onclick = function(){ act('api/backup-now', null, 'Start a backup now?'); };
-document.getElementById('twoFactorSubmit').onclick = async function(){
-  var code = document.getElementById('twoFactorCode').value.trim();
-  var errEl = document.getElementById('twoFactorError');
-  errEl.textContent = '';
-  if (!code) { errEl.textContent = 'Enter the 6-digit code.'; return; }
+document.getElementById('connectBtn').onclick = async function(){
+  var btn = this; btn.disabled = true;
+  document.getElementById('connectError').textContent = '';
   try {
-    var r = await fetch('api/2fa', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: code }) });
+    var r = await fetch('api/connect', { method: 'POST' });
     var j = await r.json();
-    if (!j.ok) { errEl.textContent = j.error || 'Failed'; return; }
-    document.getElementById('twoFactorCode').value = '';
-  } catch (e) { errEl.textContent = String(e); return; }
+    if (!j.started && j.error) document.getElementById('connectError').textContent = j.error;
+  } catch (e) { document.getElementById('connectError').textContent = String(e); }
   refresh();
 };
-document.getElementById('twoFactorCode').addEventListener('keydown', function(e){ if (e.key === 'Enter') document.getElementById('twoFactorSubmit').click(); });
-// Listen for verify.proton.me postMessage events.
-// Protocol (confirmed against ProtonMail/WebClients applications/verify/src/app/broadcast.ts):
-//   { type: 'LOADED' }                                       - boot, no reply
-//   { type: 'RESIZE',  payload: { height } }                 - resize iframe
-//   { type: 'HUMAN_VERIFICATION_SUCCESS',
-//                      payload: { token, type } }            - token solved
-//   { type: 'NOTIFICATION', payload: { type, text } }        - inline message
-//   { type: 'CLOSE' }                                        - user dismissed
-//   { type: 'ERROR',   payload: GenericErrorPayload }        - verify failed
-window.addEventListener('message', async function(ev){
+document.getElementById('disconnectBtn').onclick = async function(){
+  if (!confirm('Disconnect from Proton Drive?')) return;
   try {
-    if (ev.origin !== 'https://verify.proton.me') return;
-    var hvFrame = document.getElementById('hvFrame');
-    if (!hvFrame || ev.source !== hvFrame.contentWindow) return;
-    var msg = ev.data;
-    if (!msg || typeof msg !== 'object') return;
-    var errEl = document.getElementById('hvError');
-
-    if (msg.type === 'RESIZE' && msg.payload && msg.payload.height) {
-      hvFrame.style.height = (msg.payload.height + 8) + 'px';
-      return;
-    }
-    if (msg.type === 'CLOSE') {
-      errEl.textContent = 'Verification cancelled — refresh and try again to get a new challenge.';
-      return;
-    }
-    if (msg.type === 'ERROR') {
-      errEl.textContent = (msg.payload && (msg.payload.text || msg.payload.message)) || 'Verification error';
-      return;
-    }
-    if (msg.type !== 'HUMAN_VERIFICATION_SUCCESS') return;
-
-    var token = msg.payload && msg.payload.token;
-    var type  = (msg.payload && msg.payload.type) || 'captcha';
-    if (!token) return;
-    errEl.textContent = '';
-    try {
-      var r = await fetch('api/human-verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token: token, type: type }),
-      });
-      var j = await r.json();
-      if (!j.ok) { errEl.textContent = j.error || 'Verification failed'; return; }
-    } catch (e) { errEl.textContent = String(e); return; }
-    refresh();
-  } catch (e) { /* never let a stray message break the UI */ }
-});
+    await fetch('api/disconnect', { method: 'POST' });
+  } catch (e) { alert('Error: ' + e); }
+  refresh();
+};
 async function changeLogLevel(level) {
   try {
     await fetch('api/log-level', {
@@ -293,18 +242,8 @@ async function changeLogLevel(level) {
     });
   } catch (e) { /* level resets on next refresh if this fails */ }
 }
-document.getElementById('retryBtn').onclick = async function(){
-  var btn = this; btn.disabled = true;
-  try {
-    var r = await fetch('api/retry', { method: 'POST' });
-    var j = await r.json();
-    if (!j.ok) alert('Error: ' + (j.error || 'unknown'));
-  } catch (e) { alert('Error: ' + e); }
-  btn.disabled = false;
-  refresh();
-};
 refresh();
-setInterval(refresh, 10000);
+setInterval(refresh, 5000);
 </script>
 </body>
 </html>`;
@@ -359,52 +298,51 @@ async function handle(req, res) {
         return;
     }
 
-    if (method === 'POST' && path === '/api/retry') {
-        // Clear the halt and attempt one login. NEEDS_2FA isn't an error — the
-        // status endpoint will reflect whatever state we land in.
-        retryNow()
-            .then(() => orchestrator.runSync())
+    if (method === 'POST' && path === '/api/connect') {
+        if (state.loginInProgress) {
+            sendJson(res, 200, { started: true, alreadyRunning: true });
+            return;
+        }
+        // Start the browser sign-in in the background. The URL surfaces via
+        // /api/status (state.loginUrl) as soon as the CLI prints it; the
+        // connection flips to "connected" once the CLI completes sign-in.
+        state.loginInProgress = true;
+        state.loginUrl = null;
+        state.loginError = null;
+        cli.login({ onUrl: (u) => { state.loginUrl = u; } })
+            .then((result) => {
+                state.loginInProgress = false;
+                state.loginUrl = null;
+                if (result.ok) {
+                    state.connected = true;
+                    console.log('[ingress] Sign-in complete — connected');
+                    orchestrator.runSync().catch((err) => console.error(`[ingress] post-login sync: ${err.message}`));
+                } else {
+                    state.loginError = result.error;
+                    console.error(`[ingress] Sign-in failed: ${result.error}`);
+                }
+            })
             .catch((err) => {
-                if (err.code !== 'NEEDS_2FA') console.error(`[ingress] retry: ${err.message}`);
+                state.loginInProgress = false;
+                state.loginUrl = null;
+                state.loginError = err.message;
+                console.error(`[ingress] Sign-in error: ${err.message}`);
             });
+        sendJson(res, 200, { started: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/disconnect') {
+        try {
+            await cli.logout();
+        } catch (err) {
+            console.error(`[ingress] logout: ${err.message}`);
+        }
+        state.connected = false;
+        state.loginUrl = null;
+        state.loginInProgress = false;
+        state.loginError = null;
         sendJson(res, 200, { ok: true });
-        return;
-    }
-
-    if (method === 'POST' && path === '/api/human-verify') {
-        const body = await readBody(req);
-        const token = (body.token || '').toString().trim();
-        const type = (body.type || 'captcha').toString().trim();
-        if (!token) return sendJson(res, 400, { ok: false, error: 'token required' });
-        try {
-            await submitHumanVerification(token, type);
-            // Connected (or now in 2FA pending) — kick off a sync if connected.
-            orchestrator.runSync().catch((err) => console.error(`[ingress] post-hv sync: ${err.message}`));
-            sendJson(res, 200, { ok: true });
-        } catch (err) {
-            // NEEDS_2FA after solving HV is normal — surface via status, not as
-            // an error to the caller.
-            if (err.code === 'NEEDS_2FA' || err.code === 'NEEDS_HV') {
-                sendJson(res, 200, { ok: true });
-            } else {
-                sendJson(res, 500, { ok: false, error: err.message });
-            }
-        }
-        return;
-    }
-
-    if (method === 'POST' && path === '/api/2fa') {
-        const body = await readBody(req);
-        const code = (body.code || '').toString().trim();
-        if (!code) return sendJson(res, 400, { ok: false, error: 'code required' });
-        try {
-            await submitTwoFactorCode(code);
-            // Now connected — kick off a sync without blocking the response.
-            orchestrator.runSync().catch((err) => console.error(`[ingress] post-2fa sync: ${err.message}`));
-            sendJson(res, 200, { ok: true });
-        } catch (err) {
-            sendJson(res, 500, { ok: false, error: err.message });
-        }
         return;
     }
 
@@ -417,9 +355,9 @@ async function handle(req, res) {
 
     if (method === 'POST' && path === '/api/restore') {
         const body = await readBody(req);
-        if (!body.linkId) return sendJson(res, 400, { ok: false, error: 'linkId required' });
+        if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
         try {
-            const result = await orchestrator.restoreToHA(body.linkId);
+            const result = await orchestrator.restoreToHA(body.name);
             sendJson(res, 200, { ok: true, ...result });
         } catch (err) {
             sendJson(res, 500, { ok: false, error: err.message });
@@ -429,9 +367,9 @@ async function handle(req, res) {
 
     if (method === 'POST' && path === '/api/delete') {
         const body = await readBody(req);
-        if (!body.linkId) return sendJson(res, 400, { ok: false, error: 'linkId required' });
+        if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
         try {
-            await proton.deleteBackup(body.linkId);
+            await orchestrator.deleteProtonBackup(body.name);
             sendJson(res, 200, { ok: true });
         } catch (err) {
             sendJson(res, 500, { ok: false, error: err.message });
