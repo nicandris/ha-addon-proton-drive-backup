@@ -262,6 +262,11 @@ export function selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keep
     return [...pruneBucket(automatic, keepAutomatic), ...pruneBucket(app, keepApp)];
 }
 
+/** Clear the last error shown in the UI. */
+export function clearError() {
+    state.lastError = null;
+}
+
 export function setNextSyncEpoch(epoch) {
     state.nextSyncEpoch = epoch;
 }
