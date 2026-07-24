@@ -61,6 +61,16 @@ export async function hostInfo() {
     return supervisorJson('GET', '/host/info');
 }
 
+/** Create a new full Home Assistant backup (blocks until done). Returns the slug. */
+export async function createBackup({ name, password } = {}) {
+    const body = { name, compressed: true, background: false };
+    if (password) body.password = password;
+    console.debug(`[supervisor] createBackup: name="${name}" password=${password ? 'set' : 'none'}`);
+    const data = await supervisorJson('POST', '/backups/new/full', body);
+    console.debug(`[supervisor] createBackup: created slug=${data.slug}`);
+    return data.slug;
+}
+
 export async function downloadBackup(slug, destPath) {
     console.debug(`[supervisor] downloadBackup: slug=${slug} → ${destPath}`);
     const resp = await fetch(`${BASE_URL}/backups/${slug}/download`, {
