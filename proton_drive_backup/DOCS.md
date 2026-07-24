@@ -29,18 +29,33 @@ untouched.
 
 ## Configuration
 
-| Option                  | Description                                                                                                                                                          |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `drive_folder`          | Folder path under your Proton Drive **My files** where backups are stored. Created if it does not exist.                                                             |
-| `backup_interval_hours` | How often, in hours, to create and upload a backup. Set to `0` to never auto-create a backup — the app still uploads and prunes existing backups (upload-only mode). |
-| `backups_in_proton`     | How many of the app's backups to keep in Proton Drive. Older ones beyond this count are trashed. `0` keeps all.                                                     |
-| `backups_in_ha`         | How many of the app's backups to keep locally in Home Assistant. `0` keeps all.                                                                                     |
-| `full_backup`           | `true` for full backups, `false` for partial (Home Assistant only) backups.                                                                                          |
-| `backup_password`       | Optional password to encrypt the backup archive. Leave empty for unencrypted backups.                                                                               |
-| `log_level`             | Logging verbosity: `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`.                                                                               |
+Set these on the app's **Configuration** tab, then **Save** and restart the app.
+
+| Option                  | Default                  | Description                                                                                                                                                          |
+| ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `drive_folder`          | `Home Assistant Backups` | Folder path under your Proton Drive **My files** where backups are stored. Created if it does not exist.                                                             |
+| `backup_interval_hours` | `24`                     | How often, in hours, to create and upload a backup. Set to `0` to never auto-create a backup — the app still uploads and prunes existing backups (upload-only mode). |
+| `backups_in_proton`     | `10`                     | How many of the app's backups to keep in Proton Drive. Older ones beyond this count are trashed. `0` keeps all.                                                     |
+| `backups_in_ha`         | `4`                      | How many of the app's backups to keep locally in Home Assistant. `0` keeps all.                                                                                     |
+| `full_backup`           | `true`                   | `true` for full backups, `false` for partial (Home Assistant only) backups.                                                                                          |
+| `backup_password`       | (empty)                  | Optional password to encrypt the backup archive itself. Leave empty for unencrypted backups.                                                                         |
+| `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Can also be changed at runtime from the Web UI.                        |
 
 There is **no email / password / 2FA option** — authentication is handled by
 Proton's browser sign-in.
+
+### Optional: `STAGING_DIR` environment override
+
+When uploading or restoring, the app stages each backup archive as a temporary
+`.tar` file. It stages this **outside `/data`** by default (in the container's
+ephemeral tmp dir), because Home Assistant full-backups include the app's
+`/data` volume — a multi-GB temp file left there would get swallowed into the
+next backup and roughly double its size. You normally never need to change this.
+
+If you do need to relocate the staging area, set the `STAGING_DIR` environment
+variable to an absolute path. It is an environment override (not a
+Configuration-tab option); just make sure the path you choose is **not** part of
+any Home Assistant backup.
 
 ## Authentication
 
@@ -69,11 +84,18 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 
 - **Connect to Proton Drive** / **Disconnect** — sign in or out (see
   [Authentication](#authentication)).
-- View **status** — connection state, schedule, last backup time, next scheduled
-  run, and any last error.
-- **Back up now** — trigger an immediate backup and upload.
+- View **status** — a connection badge, schedule, last backup time, next
+  scheduled run, and any last error.
+- Watch the **live status indicator** — while a sync is running the status card
+  shows an animated **Syncing…** badge with the current step (for example
+  *"Uploading 2 of 3: &lt;name&gt;"*) and a progress bar, so a long multi-minute
+  upload never looks frozen. When idle it shows a plain badge.
+- **Back up now** — trigger an immediate backup and upload. The button shows
+  "Syncing…" and is disabled while a sync is already in progress.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
-- **Delete** — remove a backup from Proton Drive.
+  The app downloads the chosen archive from Proton, hands it to the Supervisor,
+  and starts a full restore.
+- **Delete** — remove a backup from Proton Drive (moves it to the Drive trash).
 - Change the **log level** at runtime.
 
 ## Security
@@ -110,10 +132,17 @@ by, or supported by Proton AG. It uses Proton's official, MIT-licensed
 ## Known limitations
 
 - **Early software.** This app is new and bundles a pinned, early build of the
-  CLI (`proton-drive` v0.6.0).
-- **`filesystem list --json` output shape.** The exact JSON shape the CLI emits
-  is still being validated against real accounts; the app parses it defensively
-  and logs the raw output at debug level so it can be confirmed.
+  CLI (`proton-drive` v0.6.0). The `filesystem list --json` output shape it emits
+  is still evolving between CLI releases; the app parses it defensively (as of
+  0.2.4 it reads the CLI's `Result`-wrapped `name` and the size at
+  `activeRevision.value.claimedSize`) and logs the raw output at debug level.
+- **Session persists in `/data`.** The CLI session is stored as a plain file in
+  the app's `/data` directory via the CLI's `unsafe_file` credentials store (the
+  container has no OS keyring) — see [Security](#security).
+- **Per-sync skip of un-servable backups.** If Home Assistant lists a backup but
+  returns `404` when the app tries to download it (a stale/phantom entry), that
+  backup is skipped with a warning on **every** sync until you delete the entry
+  in Home Assistant.
 - **Long-running session refresh.** Whether the CLI's session refreshes cleanly
   in a container that runs for a very long time is not yet confirmed. If the
   session ever expires, click **Connect to Proton Drive** again to re-establish it.
