@@ -2,15 +2,13 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **For the full reference, read [`DEVELOPMENT.md`](./DEVELOPMENT.md)** — module-by-module breakdown, the complete auth flow and its sharp edges, the Proton SDK/Supervisor integrations, build/versioning/deploy details, Proton compliance status, and a troubleshooting map. This file is the quick summary; `DEVELOPMENT.md` is the long form.
-
-> ⚠️ **Project status: alpha, blocked by Proton third-party auth gating.** Live testing showed brand-new accounts being blocked on the first SRP login with `HTTP 422 Code 2028` (Proton Sentinel — no `Details`, no CAPTCHA, no client-side fix). The SDK README states it is "not yet ready for third-party production use" and auth is out of its scope. `Code 9001` (HumanVerification) **is** handled (0.1.5+); `Code 2028` requires user action outside the app (appeal / wait / different IP). The repo's user-facing READMEs and `DOCS.md` carry a prominent warning. Do not assume "fix the auth code" can resolve a 2028 — it can't.
-
-> 🔄 **Architecture change (0.2.0): now CLI-based, not SDK-based.** The SDK + hand-rolled SRP/2FA/crypto auth (blocked by the 2028 gating above) is **gone**. The add-on now shells out to Proton's official first-party `proton-drive` CLI (`src/protonCli.mjs`), which owns auth via a browser sign-in URL surfaced in the Web UI (no stored email/password/2FA, no session encryption; the CLI persists its session under `/data`). Backups are identified by **filename** (no metadata API). There is **no esbuild bundle step** — Node runs `src/` directly; the Dockerfile downloads the pinned CLI binary. **This CLAUDE.md, `DOCS.md`, `DEVELOPMENT.md`, and the READMEs below still describe the old SDK design — a full doc overhaul is a deferred follow-up.** Trust the code and `CHANGELOG.md` 0.2.0 over the prose in the rest of this file for now.
+> **For the full reference, read [`DEVELOPMENT.md`](./DEVELOPMENT.md)** — module-by-module breakdown, the CLI integration and its sharp edges, the Supervisor API, build/versioning/deploy details, and a troubleshooting map. This file is the quick summary; `DEVELOPMENT.md` is the long form.
 
 ## What this is
 
-A **Home Assistant add-on** (not a custom integration) that backs up Home Assistant to Proton Drive. It is a standalone Node.js app shipped as a Docker container managed by the HA Supervisor. There is no companion Python integration — the old `custom_components/` Python/subprocess-bridge approach was removed.
+A **Home Assistant add-on** (not a custom integration) that backs up Home Assistant to Proton Drive. It is a standalone Node.js app shipped as a Docker container managed by the HA Supervisor. There is no companion Python integration.
+
+All Proton Drive operations — and authentication — go through Proton's official first-party [`proton-drive`](https://proton.me/support/proton-drive-cli) CLI (MIT-licensed), which the add-on shells out to (`src/protonCli.mjs`). The add-on never handles Proton credentials: `auth login` prints a browser sign-in URL that the Web UI surfaces as a link; the CLI owns 2FA/passwords and persists its own session under `/data`. Backups are identified by **filename** (the CLI has no metadata API). There is **no build/bundle step** — Node runs `src/` directly; the Dockerfile downloads the pinned CLI binary per arch with SHA-256 verification.
 
 The repo is a HA *add-on repository*: `repository.yaml` at the root plus the add-on in `proton_drive_backup/`. The add-on folder name is the add-on slug.
 
@@ -19,65 +17,57 @@ The repo is a HA *add-on repository*: `repository.yaml` at the root plus the add
 All commands run from `proton_drive_backup/`:
 
 ```bash
-npm install            # install deps (only @protontech/* + esbuild)
-npm run build          # esbuild bundle src/main.mjs -> dist/main.mjs
-npm start              # run the built bundle (node dist/main.mjs)
+npm start              # run the add-on (node src/main.mjs)
+npm test               # run the unit tests (node --test)
 ```
 
-There is **no test suite, linter, or formatter** configured. "Verifying" a change means: rebuild, then boot the bundle with env vars set and confirm it starts cleanly. Example smoke test (no real Proton calls — login fails fast and is caught):
+There is **no build step and no bundler**. The unit tests cover the pure decision
+logic in `orchestrator.mjs` and the CLI-output parsing in `protonCli.mjs` (using a
+fake `proton-drive` in `test/fixtures/`). A quick manual smoke test (no real
+Proton calls — `isConnected()` fails fast and sync skips when not signed in):
 
 ```bash
-PORT=8123 DATA_DIR=/tmp/x BACKUP_INTERVAL_HOURS=0 LOG_LEVEL=debug node dist/main.mjs
+PORT=8123 DATA_DIR=/tmp/x BACKUP_INTERVAL_HOURS=0 LOG_LEVEL=debug node src/main.mjs
 ```
-
-`dist/main.mjs` is a **build artifact** — gitignored, rebuilt inside the Docker image (`Dockerfile` runs `npm run build` then strips `node_modules`/`src`). Do not commit it.
-
-## Critical build constraints (esbuild)
-
-`build.mjs` has three workarounds that **must not be removed** — they were each found by trial and error and the bundle breaks without them:
-
-1. `format: 'esm'` — a dependency calls `createRequire(import.meta.url)`, which is `undefined` in CJS output.
-2. `banner.js` injecting `require`/`__filename`/`__dirname` — bundled CJS deps (e.g. `@noble/hashes`) call `require('node:crypto')` at runtime.
-3. `alias: { 'openpgp/lightweight': 'openpgp' }` — `openpgp/lightweight` has no node export condition and won't resolve.
 
 ## Architecture
 
-Single Node process. `src/main.mjs` wires it together: `setupCrypto()` → start ingress server → initial `runSync()` after 5s → optional `setInterval` scheduler.
+Single Node process. `src/main.mjs` wires it together: start the ingress server → initial `runSync()` after 5s → optional `setInterval` scheduler. No crypto/login setup — the CLI owns auth.
 
 ```
 HA Supervisor backup API  <--  add-on  -->  Proton Drive
-   (supervisor.mjs)              |           (protonClient.mjs via official SDK)
+   (supervisor.mjs)              |          (protonCli.mjs → proton-drive CLI)
                           orchestrator.mjs (sync + retention)
-                          ingress.mjs (web UI)
-                          protonAuth.mjs (login + session)
+                          ingress.mjs (web UI + connect/disconnect)
+                          main.mjs (boot, scheduler)
+                          logger.mjs (runtime log level)
 ```
 
+- **`protonCli.mjs`** — wraps the `proton-drive` binary (`$PROTON_DRIVE_BIN`, default on `$PATH`). `run()` spawns the CLI and **never rejects on a nonzero exit** — it resolves `{code, stdout, stderr}` so callers decide what an error means. Failure detection is by **exit code + stderr text**, never by JSON (the CLI signals errors via exit code even with `-j`). Exposes `isConnected`, `login` (browser sign-in; calls back with the URL scraped from stdout), `logout`, `ensureFolder`, `list`, `uploadFile`, `downloadPath`, `trash`.
+- **`orchestrator.mjs`** — `runSync()` (create HA backup → upload new ones to Proton → prune both sides), `restoreToHA()`, `deleteProtonBackup()`, `listProtonBackups()`, `ensureSession()`. Retention/upload decisions are **pure, unit-tested functions**: `selectToUpload`, `selectProtonToPrune`, `selectHAToPrune`. A module-level `syncing` guard prevents overlapping syncs (two at once make HA reject the second `createBackup` with "system is not running - freeze"). Resilient: per-backup errors are caught into `lastError`; `runSync` never throws out.
 - **`supervisor.mjs`** — HA Supervisor client (`http://supervisor`, `SUPERVISOR_TOKEN`). Create/list/download/upload/delete/restore backups. Granted `hassio_role: manager` in `config.yaml`.
-- **`protonClient.mjs`** — wraps the official `@protontech/drive-sdk` `ProtonDriveClient` for list/upload/download/delete. HA backup metadata round-trips via the SDK's `additionalMetadata` under a `HomeAssistant` key (the top-level `Common` key is reserved by the SDK).
-- **`orchestrator.mjs`** — `runSync()` (create HA backup → upload new ones to Proton → prune both sides) and `restoreToHA()`. Resilient: per-backup errors are caught into `lastError`; `runSync` never throws out. Retention pruning of *local* HA backups only ever touches backups named with the `Proton Drive Backup` prefix.
-- **`ingress.mjs`** — unauthenticated `node:http` server (HA ingress provides auth). Serves a self-contained HTML page + JSON endpoints (`/api/status`, `/api/backup-now`, `/api/restore`, `/api/delete`, `/api/2fa`).
-- **`protonAuth.mjs`** + **`httpClient.mjs`** + **`account.mjs`** — authentication (see below).
-- **`cryptoSetup.mjs`** — one-time `CryptoProxy` init for Node (`CryptoApi.init({})` then `setEndpoint`). Must run before any Drive/crypto call. Note the `.ts` in the import specifier `@protontech/crypto/proxy/endpoint/api.ts` — keep it.
+- **`ingress.mjs`** — unauthenticated `node:http` server (HA ingress provides auth). Serves a self-contained HTML page + JSON endpoints (`/api/status`, `/api/connect`, `/api/disconnect`, `/api/backup-now`, `/api/restore`, `/api/delete`, `/api/log-level`). `/api/connect` starts `cli.login` in the background and surfaces the sign-in URL via `/api/status`.
+- **`logger.mjs`** — patches `console` once for timestamped, level-filtered logging; level is adjustable at runtime from the UI.
+- **`main.mjs`** — boot, `/data/tmp` setup, scheduler, SIGTERM/SIGINT.
 
-### Authentication — the SDK does NOT do this
+## Authentication — owned by the CLI
 
-The Proton Drive SDK only performs Drive operations once handed an authenticated `httpClient` + an `account` with decrypted keys. **Login, SRP, 2FA, and session management are all our own code** in `httpClient.mjs` (`srpAuth`) and `protonAuth.mjs`. Flow:
+The add-on does **no** login handshake, 2FA, or session management of its own. `proton-drive auth login` prints a Proton sign-in URL and blocks until the user completes sign-in in a browser (on any device); the CLI then persists the session itself. Key env (set by `run.sh`):
 
-1. SRP login from `PROTON_EMAIL`/`PROTON_PASSWORD` (`/auth/v4/info` → `/auth/v4`).
-2. If the account has 2FA, `beginAuth()` throws `NEEDS_2FA` and holds the partial session; the user submits a **live 6-digit code** via the web UI → `submitTwoFactorCode()` → `/auth/v4/2fa`. The TOTP seed is never stored (this was a deliberate change away from storing the seed; there is no `otplib` dependency).
-3. `completeLogin()` derives the key password (`computeKeyPassword`), builds the account (imports address keys), and inits the client.
-4. Session persisted to `${DATA_DIR}/session.json`, **encrypted at rest** with AES-256-GCM. The key is derived (scrypt) from the Proton password at runtime and never written to disk. `loadPersistedSession` transparently migrates a legacy plaintext file. Token refresh on 401 rotates and re-persists tokens, so restarts don't re-prompt for 2FA.
+- `PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file` — avoids the OS keyring (absent in the bare Alpine container).
+- `XDG_DATA_HOME=/data` — persists the CLI session under HA's `/data` so it survives restarts (written under `$XDG_DATA_HOME/proton-drive-cli/`).
 
-`x-pm-appversion` is `external-drive-ha_addon_proton_drive_backup@<version>-alpha`, where `<version>` is read from `config.yaml` at build time (the single source of truth — see §12). The `{name}` must identify *this* third-party project — not `home_assistant` (impersonates the HA project) and not anything implying Proton. Must not spoof first-party apps.
+`orchestrator.ensureSession()` probes `cli.isConnected()` (a cheap `filesystem info /my-files`) and sets `needsLogin`; the UI drives the actual sign-in. There is no stored email/password/2FA and no session encryption to manage.
 
 ## Gotchas
 
 - **Line endings must be LF.** `run.sh` uses `#!/usr/bin/with-contenv bashio`; CRLF breaks the shebang inside the Linux container. `.gitattributes` enforces `eol=lf` — keep it.
-- **Config flows env → app.** `run.sh` (bashio) maps each `config.yaml` option to an env var (e.g. `proton_email` → `PROTON_EMAIL`). Adding an option means editing `config.yaml` (both `options:` and `schema:`), `run.sh`, and reading it in `main.mjs`/`orchestrator.mjs`.
+- **Config flows env → app.** `run.sh` (bashio) maps each `config.yaml` option to an env var (e.g. `drive_folder` → `DRIVE_FOLDER`). Adding an option means editing `config.yaml` (both `options:` and `schema:`), `run.sh`, and reading it in `main.mjs`/`orchestrator.mjs`.
 - **`ingress_port: 8099`** in `config.yaml` must match `export PORT=8099` in `run.sh`.
-- **SDK is pre-release (alpha).** Proton has a crypto migration targeted ~late 2026/2027 that may break the auth/encryption flow; logins failing afterward likely means the SDK needs updating.
-- **Security posture is documented honestly in `README.md`/`DOCS.md`:** traffic is HTTPS and backups are E2E-encrypted client-side, but credentials live in HA's `options.json` in plaintext (platform limitation). Don't overstate security in docs.
+- **`arch` is `amd64`/`aarch64` only** in `config.yaml` — Proton ships no `armv7`/`i386` CLI build. The Dockerfile fails the build on any other arch.
+- **CLI failure detection is by exit code + stderr, not JSON.** Never trust `-j` output to detect errors. `list` parses JSON only to read entries and returns `[]` on any parse failure (the `filesystem list --json` shape is still being validated against real accounts).
+- **Security posture is documented honestly in `README.md`/`DOCS.md`:** traffic is HTTPS and backups are E2E-encrypted client-side; the add-on stores **no** Proton password, but the CLI's session token lives in `/data` (`unsafe_file` store) in plaintext. Don't overstate security in docs.
 
 ## Deploy target
 
-HA **OS or Supervised only** (add-ons don't exist on Core/Container). `Dockerfile` uses an explicit `FROM ghcr.io/home-assistant/base:<ver>` (the `BUILD_FROM` arg is no longer auto-provided by recent Supervisor versions).
+HA **OS or Supervised only** (add-ons don't exist on Core/Container). `Dockerfile` uses an explicit `FROM ghcr.io/home-assistant/base:<ver>`, installs `nodejs`, downloads the pinned per-arch `proton-drive` binary (SHA-256 verified), copies `src/`, and runs `node /app/src/main.mjs` via `run.sh`. No build step.
