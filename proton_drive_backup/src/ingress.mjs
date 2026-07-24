@@ -15,6 +15,7 @@ import { createServer } from 'node:http';
 
 import * as cli from './protonCli.mjs';
 import * as orchestrator from './orchestrator.mjs';
+import * as supervisor from './supervisor.mjs';
 import { getLogLevel, setLogLevel } from './logger.mjs';
 
 // UI-facing login state. connected is refreshed from the CLI on each status poll.
@@ -67,6 +68,32 @@ async function buildStatus() {
         }
     }
 
+    // Backup statistics (best-effort — never let a stats failure break status).
+    let stats = null;
+    try {
+        const haBackups = await supervisor.listBackups();
+        const ours = haBackups.filter(orchestrator.isOurHABackup);
+        const haSizeMB = ours.reduce((s, b) => s + (Number(b.size) || 0), 0);
+        const protonSizeBytes = (backups || []).reduce((s, b) => s + (Number(b.size) || 0), 0);
+        let host = null;
+        try { host = await supervisor.hostInfo(); } catch { /* disk stats optional */ }
+        const gb = (v) => (typeof v === 'number' ? Math.round(v * 1024 * 1024 * 1024) : null);
+        const dates = [...(backups || []).map((b) => b.date), ...ours.map((b) => b.date)]
+            .filter(Boolean).map((d) => new Date(d).getTime()).filter((n) => !isNaN(n));
+        stats = {
+            haCount: ours.length,
+            haSizeBytes: Math.round(haSizeMB * 1024 * 1024),
+            haIgnored: Math.max(0, haBackups.length - ours.length),
+            protonCount: (backups || []).length,
+            protonSizeBytes,
+            hostDiskFreeBytes: gb(host?.disk_free),
+            hostDiskTotalBytes: gb(host?.disk_total),
+            lastBackup: dates.length ? new Date(Math.max(...dates)).toISOString() : null,
+        };
+    } catch (err) {
+        console.debug(`[ingress] stats: ${err.message}`);
+    }
+
     const statusLabel = connected
         ? 'connected'
         : (state.loginInProgress || state.loginUrl)
@@ -88,6 +115,7 @@ async function buildStatus() {
         syncing: status.syncing,
         activity: status.activity,
         progress: status.progress,
+        stats,
         backups,
     };
 }
@@ -132,6 +160,21 @@ function renderPage() {
   .progress-bar { height: 100%; background: #6d4aff; border-radius: 999px; transition: width .3s ease; }
   .progress-indet { width: 40%; animation: indet 1.2s ease-in-out infinite; }
   @keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
+  @media (prefers-color-scheme: dark) {
+    body { background: #1a1c1e; color: #e3e3e3; }
+    .card { background: #242628; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+    .row span:first-child, .hint { color: #9aa0a6; }
+    .ok { color: #5bd075; }
+    .bad, .err { color: #ff6b6b; }
+    .ghost { background: #37393c; color: #e3e3e3; }
+    th, td { border-bottom-color: #37393c; }
+    select { background: #2c2e30; color: #e3e3e3; border-color: #4a4d50; }
+    .badge-ok { background: #12341c; color: #5bd075; }
+    .badge-bad { background: #3a1414; color: #ff6b6b; }
+    .badge-sync { background: #2a2350; color: #b3a4ff; }
+    .badge-idle { background: #333; color: #aaa; }
+    .progress { background: #37393c; }
+  }
 </style>
 </head>
 <body>
@@ -153,6 +196,7 @@ function renderPage() {
 <div class="card">
   <button class="primary" id="backupNow">Back up now</button>
 </div>
+<div class="card" id="statsCard" style="display:none"></div>
 <div class="card">
   <h2 style="font-size:1.1rem">Proton backups</h2>
   <table>
@@ -203,6 +247,25 @@ async function refresh() {
     var backupNowBtn = document.getElementById('backupNow');
     backupNowBtn.disabled = syncing;
     backupNowBtn.textContent = syncing ? 'Syncing…' : 'Back up now';
+
+    var statsCard = document.getElementById('statsCard');
+    if (s.stats) {
+      var st = s.stats;
+      statsCard.style.display = 'block';
+      statsCard.innerHTML =
+        '<h2 style="font-size:1.1rem;margin-top:0">Backup statistics</h2>' +
+        '<div class="row"><span>In Home Assistant</span><span>' + st.haCount + ' (' + fmtSize(st.haSizeBytes) + ')' +
+          (st.haIgnored ? ' · ' + st.haIgnored + ' other' : '') + '</span></div>' +
+        '<div class="row"><span>In Proton Drive</span><span>' + st.protonCount + ' (' + fmtSize(st.protonSizeBytes) + ')</span></div>' +
+        (st.hostDiskFreeBytes != null
+          ? '<div class="row"><span>Host disk free</span><span>' + fmtSize(st.hostDiskFreeBytes) +
+            (st.hostDiskTotalBytes ? ' / ' + fmtSize(st.hostDiskTotalBytes) : '') + '</span></div>'
+          : '') +
+        '<div class="row"><span>Last backup</span><span>' + (st.lastBackup ? new Date(st.lastBackup).toLocaleString() : '—') + '</span></div>' +
+        '<div class="row"><span>Next backup</span><span>' + next + '</span></div>';
+    } else {
+      statsCard.style.display = 'none';
+    }
 
     // Connect / Connected cards.
     document.getElementById('connectedCard').style.display = s.connected ? 'block' : 'none';

@@ -56,6 +56,11 @@ export async function getBackupInfo(slug) {
     return supervisorJson('GET', `/backups/${slug}/info`);
 }
 
+/** Host info (disk_total / disk_used / disk_free in GB) for the stats panel. */
+export async function hostInfo() {
+    return supervisorJson('GET', '/host/info');
+}
+
 export async function createBackup({ name, password, full = true } = {}) {
     const body = { name, compressed: true, background: false };
     if (password) body.password = password;
