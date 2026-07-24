@@ -201,8 +201,10 @@ function renderPage() {
   <button class="ghost" id="disconnectBtn">Disconnect</button>
 </div>
 <div class="card">
+  <button class="primary" id="createBackup" style="margin-right:.35rem">Create backup</button>
   <button class="primary" id="syncNow">Sync now</button>
-  <button class="ghost" id="pruneHA">Clean up local backups</button>
+  <button class="ghost" id="pruneHA" style="margin-left:.35rem">Clean up local backups</button>
+  <p class="hint" id="createHint" style="margin:.5rem 0 0">Create backup makes a new Home Assistant backup now and uploads it. Sync now just uploads existing HA backups.</p>
   <p class="hint" id="pruneHint" style="margin:.5rem 0 0"></p>
 </div>
 <div class="card">
@@ -256,6 +258,10 @@ async function refresh() {
     var syncBtn = document.getElementById('syncNow');
     syncBtn.disabled = syncing;
     syncBtn.textContent = syncing ? 'Syncing…' : 'Sync now';
+
+    var createBtn = document.getElementById('createBackup');
+    createBtn.disabled = syncing || !s.connected;
+    createBtn.textContent = syncing ? 'Working…' : 'Create backup';
 
     backupsInHA = s.backupsInHA || 0;
     var retentionOff = backupsInHA <= 0;
@@ -332,6 +338,14 @@ document.getElementById('syncNow').onclick = async function(){
   var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
   try {
     await fetch('api/sync-now', { method: 'POST' });
+  } catch (e) { alert('Error: ' + e); }
+  refresh();
+};
+document.getElementById('createBackup').onclick = async function(){
+  if (!confirm('Create a new Home Assistant backup now and upload it to Proton?')) return;
+  var btn = this; btn.disabled = true; btn.textContent = 'Working…';
+  try {
+    await fetch('api/create-backup', { method: 'POST' });
   } catch (e) { alert('Error: ' + e); }
   refresh();
 };
@@ -473,6 +487,12 @@ async function handle(req, res) {
         state.loginInProgress = false;
         state.loginError = null;
         sendJson(res, 200, { ok: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/create-backup') {
+        orchestrator.createBackupNow().catch((err) => console.error(`[ingress] create-backup: ${err.message}`));
+        sendJson(res, 200, { started: true });
         return;
     }
 

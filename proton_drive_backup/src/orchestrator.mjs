@@ -418,6 +418,55 @@ export async function runSync(force = false) {
 }
 
 /**
+ * Manually create a new full HA backup on demand, then mirror it to Proton.
+ * On-demand only (no automatic/scheduled creation). Never throws out — records
+ * state.lastError like runSync, and honours the single-sync guard.
+ */
+export async function createBackupNow() {
+    if (syncing) {
+        console.warn('[orchestrator] createBackupNow: a sync/backup is already running — skipping');
+        return;
+    }
+    syncing = true;
+    try {
+        state.lastError = null;
+        setActivity('Checking connection…');
+        if (!(await ensureSession())) {
+            state.lastError = 'Not connected to Proton Drive — sign in from the Web UI.';
+            return;
+        }
+        const { backupPassword } = cfg();
+        const name = `Manual backup ${new Date().toISOString()}`;
+        setActivity('Creating Home Assistant backup…');
+        console.log(`[orchestrator] Creating manual HA backup "${name}"`);
+        try {
+            await supervisor.createBackup({ name, password: backupPassword });
+            console.debug('[orchestrator] Manual backup created');
+        } catch (err) {
+            const msg = describeError(err);
+            state.lastError = /freeze|not running|blocked from execution/i.test(msg)
+                ? 'Home Assistant is busy (a backup/operation is already running) — try again shortly.'
+                : `Backup creation failed: ${msg}`;
+            console.error(`[orchestrator] ${state.lastError}`);
+            return;
+        }
+        // Mirror the just-created backup (and any others) to Proton.
+        setActivity('Checking Proton Drive…');
+        await syncBackupsToProton();
+        setActivity('Pruning old backups…');
+        await pruneProton();
+        state.lastSync = new Date().toISOString();
+        console.log('[orchestrator] Manual backup created and synced');
+    } catch (err) {
+        state.lastError = describeError(err);
+        console.error(`[orchestrator] Manual backup failed: ${state.lastError}`);
+    } finally {
+        syncing = false;
+        setActivity(null);
+    }
+}
+
+/**
  * Restore a Proton backup (identified by its remote filename) into HA:
  * download it, upload it to the Supervisor, then start a full restore.
  */
