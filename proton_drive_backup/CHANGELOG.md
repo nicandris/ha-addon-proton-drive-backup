@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.2
+
+- **Stage backup downloads outside `/data`.** Temp `.tar` files were staged in
+  `/data/tmp`, but HA includes the add-on's `/data` in full backups — so a
+  backup created while a temp file was present swallowed it (a 4.87 GB backup
+  ballooned to 9.74 GB). Downloads now stage in the container's ephemeral tmp
+  dir (override with `STAGING_DIR`), which is never part of an HA backup.
+- **Skip backups Home Assistant no longer serves.** If the Supervisor lists a
+  backup but returns `404` on download (a stale/phantom entry), the sync now
+  skips it with a warning instead of raising a hard error every run. Delete the
+  entry in HA to silence the warning.
+
 ## 0.2.1
 
 - **Fix `Sync failed: name.startsWith is not a function`.** `filesystem list`
