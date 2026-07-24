@@ -217,14 +217,26 @@ export async function list(remotePath) {
             return [];
         }
         return arr.map((e) => {
-            // Entries may be plain strings (bare filenames) or objects with a
-            // name field under various casings; coerce to a string either way.
-            const rawName = (typeof e === 'string') ? e : (e?.name ?? e?.Name ?? e?.fileName);
+            if (typeof e === 'string') return { name: e };
+            // Proton's CLI serialises `name` as a Result object
+            // ({ ok: true, value: "<filename>" }) — NOT a plain string. Extract
+            // the value; also tolerate a plain string / differently-cased key.
+            const n = e?.name;
+            let name = '';
+            if (typeof n === 'string') name = n;
+            else if (n && typeof n === 'object' && n.ok && typeof n.value === 'string') name = n.value;
+            else if (typeof (e?.Name ?? e?.fileName) === 'string') name = e.Name ?? e.fileName;
+            // Size lives on activeRevision (itself a Result), absent for folders.
+            const rev = e?.activeRevision;
+            const flatSize = e?.size ?? e?.Size;
+            const size = (rev && rev.ok && rev.value && typeof rev.value.claimedSize === 'number')
+                ? rev.value.claimedSize
+                : (typeof flatSize === 'number' ? flatSize : undefined);
             return {
-                name: typeof rawName === 'string' ? rawName : '',
+                name,
                 type: e?.type ?? e?.Type,
-                uid: e?.uid ?? e?.uID ?? e?.id,
-                size: e?.size ?? e?.Size,
+                uid: e?.uid ?? e?.id,
+                size,
             };
         }).filter((e) => e.name);
     } catch (err) {
