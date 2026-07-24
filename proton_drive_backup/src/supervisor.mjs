@@ -80,7 +80,12 @@ export async function downloadBackup(slug, destPath) {
         headers: authHeaders(),
     });
     if (!resp.ok || !resp.body) {
-        throw new Error(`Supervisor download ${slug} failed: HTTP ${resp.status}`);
+        // Attach the HTTP status so callers can treat a 404 (backup listed but no
+        // longer downloadable — a stale/phantom entry) as a skip, not a hard error.
+        throw Object.assign(
+            new Error(`Supervisor download ${slug} failed: HTTP ${resp.status}`),
+            { status: resp.status },
+        );
     }
     await pipeline(Readable.fromWeb(resp.body), createWriteStream(destPath));
     console.debug(`[supervisor] downloadBackup: ${slug} written to ${destPath}`);
