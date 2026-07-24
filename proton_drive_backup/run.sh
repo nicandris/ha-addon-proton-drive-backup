@@ -1,6 +1,4 @@
 #!/usr/bin/with-contenv bashio
-export PROTON_EMAIL="$(bashio::config 'proton_email')"
-export PROTON_PASSWORD="$(bashio::config 'proton_password')"
 export DRIVE_FOLDER="$(bashio::config 'drive_folder')"
 export BACKUP_INTERVAL_HOURS="$(bashio::config 'backup_interval_hours')"
 export BACKUPS_IN_PROTON="$(bashio::config 'backups_in_proton')"
@@ -14,5 +12,12 @@ fi
 export LOG_LEVEL="$(bashio::config 'log_level')"
 export PORT=8099
 export DATA_DIR=/data
+# proton-drive CLI configuration:
+#  - unsafe_file store avoids the OS keyring (absent in a bare Alpine container).
+#  - XDG_DATA_HOME points at HA's persistent /data so the session survives restarts
+#    (written under $XDG_DATA_HOME/proton-drive-cli/).
+export PROTON_DRIVE_CREDENTIALS_STORE=unsafe_file
+export XDG_DATA_HOME="${DATA_DIR:-/data}"
+export PROTON_DRIVE_BIN=/usr/local/bin/proton-drive
 bashio::log.info "Starting Proton Drive Backup..."
-exec node /app/dist/main.mjs
+exec node /app/src/main.mjs
