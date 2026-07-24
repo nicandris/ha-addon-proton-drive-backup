@@ -1,39 +1,34 @@
 # Proton Drive Backup
 
-> ⚠️ **Pre-release warning — risk of account blocks.** Proton's Drive SDK is
-> in alpha and Proton has not opened third-party authentication. Brand-new
-> Proton accounts have been blocked on the **first** login attempt with HTTP
-> 422 `Code 2028` (Sentinel hard block — no CAPTCHA, no client-side fix).
-> Clearing it requires waiting and/or appealing at
-> [proton.me/support/appeal-abuse](https://proton.me/support/appeal-abuse).
-> Use only with a Proton account you can afford to have temporarily blocked.
-> Likely to improve once Proton officially releases the SDK for third-party
-> use (~late 2026 / early 2027).
-
 Automatically back up Home Assistant to [Proton Drive](https://proton.me/drive)
-using the official Proton Drive SDK.
+using Proton's official first-party `proton-drive` CLI.
 
 This is a self-contained Home Assistant app (Node.js). It calls the
 Supervisor backup API to create backups and uploads them to your Proton Drive on
-a schedule, with retention limits and an ingress web UI. There is no companion
-custom integration.
+a schedule, with retention limits and an ingress web UI. **No Proton credentials
+are entered into or stored by the app** — you sign in through Proton's own
+browser login. There is no companion custom integration.
+
+Requires Home Assistant OS or Supervised, on **amd64** or **aarch64** (Proton
+ships no CLI build for other architectures).
 
 ## Quick start
 
 1. Add this repository to your app store (Settings → Apps → App store →
    ⋮ → Repositories).
-2. Install **Proton Drive Backup**.
-3. Enter your Proton email and password, then start the app.
-4. Open the web UI to view status and trigger backups. If your account uses 2FA,
-   enter a one-time 6-digit code there when prompted to connect.
+2. Install **Proton Drive Backup** and **Start** it.
+3. Open the **Web UI** and click **Connect to Proton Drive**. Open the sign-in
+   link it shows on any device (phone or PC) and complete sign-in with Proton
+   (including your normal two-factor, if enabled).
+4. The app then creates and uploads backups on the configured schedule.
 
-See [DOCS.md](DOCS.md) for full configuration details.
+See [DOCS.md](DOCS.md) for full configuration and usage details.
 
 ## Security note
 
-This is a third-party, community app and is not affiliated with Proton AG.
-Backups are end-to-end encrypted client-side before upload, and the app never
-stores your TOTP/2FA secret. However, your Proton credentials and session are
-stored **unencrypted** on your Home Assistant host (as with all HA app
-secrets). See [DOCS.md](DOCS.md#security) for the full picture and
-recommendations.
+This is a third-party, community app and is not affiliated with Proton AG. It
+uses Proton's official, MIT-licensed `proton-drive` CLI. Backups are end-to-end
+encrypted client-side before upload, and **the app never stores your Proton
+password**. The CLI's session token is written to the app's `/data` directory
+(as with all HA app storage). See [DOCS.md](DOCS.md#security) for the full
+picture and recommendations.
