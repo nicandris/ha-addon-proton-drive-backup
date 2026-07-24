@@ -72,8 +72,13 @@ The app exposes an ingress web UI (the **Proton Backup** sidebar panel, or
 **Open Web UI** on the app page) where you can:
 
 - **Connect to Proton Drive** / **Disconnect** — sign in or out (see below).
-- View **status** — connection state, schedule, last/next sync, and any last error.
-- **Back up now** — trigger an immediate backup and upload.
+- View **status** — a connection badge, schedule, last/next sync, and any last
+  error, plus a **live sync indicator**: while a sync runs, an animated
+  **Syncing…** badge shows the current step (e.g. *"Uploading 2 of 3:
+  &lt;name&gt;"*) with a progress bar, so long multi-minute uploads never look
+  frozen.
+- **Back up now** — trigger an immediate backup and upload. It shows "Syncing…"
+  and is disabled while a sync is already running.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
 - **Delete** — remove a backup from Proton Drive.
 - Change the **log level** at runtime.
@@ -110,9 +115,18 @@ Supervisor backup API. On its schedule (or when you click **Back up now**) it:
 1. Asks the Supervisor to create a backup named
    `Proton Drive Backup <ISO timestamp>` (only when `backup_interval_hours > 0`).
 2. Lists both sides, downloads any of its backups not yet in Proton from the
-   Supervisor, and uploads them to the Drive folder as `<name>.tar`.
+   Supervisor (staged in a temp dir **outside `/data`** — see below), and
+   uploads them to the Drive folder as `<name>.tar`. A backup that HA lists but
+   can no longer serve (a `404` on download — a stale/phantom entry) is skipped
+   with a warning rather than failing the whole sync.
 3. Prunes each side down to its retention count — only ever touching backups
    this app created.
+
+Downloads are staged in the container's ephemeral tmp dir, **not** under
+`/data`, because HA full-backups include the app's `/data` volume — staging a
+multi-GB `.tar` there would let a backup swallow it. Override the staging
+location with the optional **`STAGING_DIR`** environment variable if you need to
+point it elsewhere.
 
 **Restore** downloads the chosen backup from Proton Drive and hands it to the
 Supervisor, which performs the restore.
@@ -157,10 +171,13 @@ endorsed by, or supported by Proton AG. It uses Proton's official, MIT-licensed
 ## Known limitations
 
 - **Early software.** This app is new and bundles a pinned, early build of the
-  CLI (`proton-drive` v0.6.0).
-- **`filesystem list --json` output shape.** The exact JSON shape the CLI emits
-  is still being validated against real accounts; the app parses it defensively
-  and logs the raw output at debug level.
+  CLI (`proton-drive` v0.6.0). The `filesystem list --json` output shape it emits
+  is still being nailed down between CLI releases; the app parses it defensively
+  (as of 0.2.4 it reads the CLI's `Result`-wrapped `name` and the size at
+  `activeRevision.value.claimedSize`) and logs the raw output at debug level.
+- **Per-sync skip of un-servable backups.** If HA lists a backup but returns a
+  `404` when the app tries to download it (a stale/phantom entry), that backup is
+  skipped with a warning each sync. Delete the entry in HA to silence it.
 - **Long-running session refresh.** Whether the CLI's session refreshes cleanly
   in a container that runs for a very long time is not yet confirmed. If the
   session ever expires, just click **Connect to Proton Drive** again.
