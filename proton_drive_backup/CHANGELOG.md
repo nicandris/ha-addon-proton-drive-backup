@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.1
+
+- **Fix `Sync failed: name.startsWith is not a function`.** `filesystem list`
+  entries whose `name` wasn't a plain string crashed retention. `list` now
+  coerces names (tolerating bare-string entries) and `isOurRemoteFile` is
+  type-guarded. The raw `list` JSON is logged at debug level to validate
+  Proton's real output shape.
+- **Prevent overlapping syncs.** `runSync` is triggered from startup, the
+  scheduler, post-login, and "back up now"; two at once made Home Assistant
+  reject the second backup with `system is not running - freeze` and race on
+  retention. A guard now ensures only one sync runs at a time.
+
 ## 0.2.0
 
 - **Switched to Proton's official first-party `proton-drive` CLI.** The previous
