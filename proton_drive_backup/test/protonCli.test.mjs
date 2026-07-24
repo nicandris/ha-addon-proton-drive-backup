@@ -127,6 +127,36 @@ test('list() drops entries without a name', async () => {
     assert.deepEqual(r.map((e) => e.name), ['ok.tar']);
 });
 
+test('list() extracts name from a Result object and size from activeRevision (real Proton shape)', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        {
+            uid: 'u1',
+            name: { ok: true, value: 'Proton Drive Backup 2026-07-24T13:14:45.098Z.tar' },
+            type: 'file',
+            activeRevision: { ok: true, value: { claimedSize: 4096 } },
+        },
+    ]);
+    const r = await cli.list('/my-files/x');
+    assert.equal(r.length, 1);
+    assert.deepEqual(r[0], {
+        name: 'Proton Drive Backup 2026-07-24T13:14:45.098Z.tar',
+        type: 'file',
+        uid: 'u1',
+        size: 4096,
+    });
+});
+
+test('list() drops entries whose name Result failed (ok:false)', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        { name: { ok: false, error: { code: 1 } }, type: 'file' },
+        { name: { ok: true, value: 'ok.tar' }, type: 'file' },
+    ]);
+    const r = await cli.list('/my-files/x');
+    assert.deepEqual(r.map((e) => e.name), ['ok.tar']);
+});
+
 test('list() coerces an array of bare filename strings', async () => {
     clearFake();
     process.env.FAKE_LIST_JSON = JSON.stringify(['a.tar', 'b.tar']);

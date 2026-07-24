@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.4
+
+- **Fix "No backups in Proton Drive" (and duplicate re-uploads).** Proton's CLI
+  serialises each entry's `name` as a `Result` object
+  (`{ ok: true, value: "<file>.tar" }`), not a plain string — so the listing
+  parser matched nothing, the UI showed no backups, and dedup was blind (it
+  re-uploaded a fresh copy every sync). `list` now reads the name from
+  `name.value` and the size from `activeRevision.value.claimedSize`, matching
+  the CLI's actual schema. This was the root cause of the earlier
+  `name.startsWith is not a function` crash too.
+
 ## 0.2.3
 
 - **Live status indicator in the Web UI.** The status card now shows a
