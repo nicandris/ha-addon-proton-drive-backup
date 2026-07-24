@@ -27,9 +27,11 @@ in through Proton's own login in a browser.
   to a folder in your Proton Drive using the official `proton-drive` CLI,
   deduping by the backup's slug (remote name `<name> (<slug>).tar`).
 - Syncs on boot, on a configurable check interval, and on demand (**Sync now**).
-- Prunes Proton Drive automatically to a retention count; local Home Assistant
-  clean-up is **manual only** and never deletes a backup that isn't already in
-  Proton.
+- Prunes Proton Drive automatically using **two independent retention buckets**
+  — *automatic* (backups named "Automatic backup") vs *app* (everything else) —
+  so a burst of small per-add-on backups can never evict the important scheduled
+  ones. Local Home Assistant clean-up is **manual only** and never deletes a
+  backup that isn't already in Proton.
 - Provides an ingress web UI to connect/disconnect, view status and statistics,
   sync now, clean up local backups, restore, and delete backups.
 
@@ -62,8 +64,10 @@ custom integration to install.
 | ----------------------- | -------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------- |
 | `drive_folder`          | string   | `Home Assistant Backups` | Folder path under your Proton Drive **My files** where backups are stored (created if missing).                      |
 | `backup_interval_hours` | int      | `24`                     | Hours between checks for new Home Assistant backups to upload. The app also syncs on boot and via **Sync now**. `0` = boot + manual only. |
-| `backups_in_proton`     | int      | `10`                     | How many mirrored backups to keep in Proton Drive (oldest by date trashed automatically each sync). `0` = keep all. |
-| `backups_in_ha`         | int      | `4`                      | Newest local Home Assistant backups to keep. Used **only** by the manual **Clean up local backups** button. `0` = disable local clean-up. |
+| `keep_automatic_in_proton` | int   | `10`                     | Newest **automatic** backups (name starts with "Automatic backup") to keep in Proton Drive (older ones trashed automatically each sync). `0` = keep all. |
+| `keep_app_in_proton`    | int      | `10`                     | Newest **app** backups (everything else — per-add-on backups, manual snapshots) to keep in Proton Drive. `0` = keep all. Independent bucket, so an app-backup burst can't evict automatic backups. |
+| `keep_automatic_in_ha`  | int      | `0`                      | Newest local **automatic** backups to keep in HA. Used **only** by the manual **Clean up local backups** button. `0` = keep all (no clean-up of that bucket). |
+| `keep_app_in_ha`        | int      | `0`                      | Newest local **app** backups to keep in HA. Used **only** by the manual **Clean up local backups** button. `0` = keep all (no clean-up of that bucket). |
 | `backup_password`       | password | (empty)                  | Password to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty otherwise. |
 | `log_level`             | list     | `info`                   | One of `trace`, `debug`, `info`, `notice`, `warning`, `error`, `fatal`.                                              |
 
@@ -80,17 +84,20 @@ The app exposes an ingress web UI (the **Proton Backup** sidebar panel, or
 **Open Web UI** on the app page) where you can:
 
 - **Connect to Proton Drive** / **Disconnect** — sign in or out (see below).
-- View **status** and **statistics** — a connection badge, schedule, last/next
-  sync, backups-in-HA vs mirrored-in-Proton counts and sizes, host disk free, and
-  any last error, plus a **live sync indicator**: while a sync runs, an animated
+- View **status**, **statistics**, and **settings** — a connection badge,
+  schedule, last/next sync, backups-in-HA vs mirrored-in-Proton counts split by
+  bucket ("N automatic, M app") and sizes, host disk free, any last error, a
+  read-only **Settings** card (drive folder, sync interval, the four keep-counts,
+  whether a backup password is set — boolean only — and the staging dir if
+  overridden), plus a **live sync indicator**: while a sync runs, an animated
   **Syncing…** badge shows the current step (e.g. *"Uploading 2 of 3:
-  &lt;name&gt;"*) with a progress bar. On wide screens status and statistics sit
-  side by side.
+  &lt;name&gt;"*) with a progress bar. On wide screens the cards sit side by side.
 - **Sync now** — upload any existing Home Assistant backups not yet in Proton. It
   shows "Syncing…" and is disabled while a sync is already running.
 - **Clean up local backups** — manually delete local Home Assistant backups
-  beyond the newest `backups_in_ha`, but only ones already copied to Proton
-  (never an un-mirrored backup). Reports how many were deleted vs skipped.
+  beyond the newest `keep_automatic_in_ha` automatic / `keep_app_in_ha` app, but
+  only ones already copied to Proton (never an un-mirrored backup, in either
+  bucket). Reports how many were deleted vs skipped.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
 - **Delete** — remove a backup from Proton Drive.
 - Change the **log level** at runtime.
@@ -132,9 +139,11 @@ now** it:
    Drive folder as `<name> (<slug>).tar`. A backup that HA lists but can no
    longer serve (a `404` on download — a stale/phantom entry) is skipped with a
    warning rather than failing the whole sync.
-3. Prunes Proton Drive down to `backups_in_proton` (oldest by date). Local Home
-   Assistant clean-up is **not** part of the sync — it happens only when you
-   press **Clean up local backups**, and only for backups already in Proton.
+3. Prunes Proton Drive in two independent buckets — `keep_automatic_in_proton`
+   for "Automatic backup" archives and `keep_app_in_proton` for the rest (oldest
+   by date within each). Local Home Assistant clean-up is **not** part of the
+   sync — it happens only when you press **Clean up local backups**, and only for
+   backups already in Proton.
 
 Downloads are staged in the container's ephemeral tmp dir, **not** under
 `/data`, because HA full-backups include the app's `/data` volume — staging a

@@ -93,73 +93,159 @@ test('selectToUpload handles empty/nullish inputs and drops slug-less backups', 
     assert.deepEqual(o.selectToUpload([{ name: 'no-slug' }], []), []);
 });
 
-test('selectProtonToPrune trashes by DATE (newest kept) beyond the keep count', () => {
+test('isAutomaticBackup matches "Automatic backup …" on names AND remote filenames', () => {
+    assert.equal(o.isAutomaticBackup('Automatic backup 2026.7.3'), true);
+    assert.equal(o.isAutomaticBackup('Automatic backup 2026.7.3 (a1b2c3d4).tar'), true);
+    assert.equal(o.isAutomaticBackup('automatic backup lower-case'), true); // case-insensitive
+    assert.equal(o.isAutomaticBackup('Matter Server 8.0.0 (x).tar'), false);
+    assert.equal(o.isAutomaticBackup('Manual backup 2026-07-24'), false);
+    assert.equal(o.isAutomaticBackup('Full Snapshot v1.2.3 (s).tar'), false);
+    assert.equal(o.isAutomaticBackup(undefined), false);
+    assert.equal(o.isAutomaticBackup(null), false);
+    // Consistent classification across an HA name and its Proton remote filename.
+    const b = { name: 'Automatic backup 2026.7.3', slug: 'a1b2c3d4' };
+    assert.equal(o.isAutomaticBackup(b.name), o.isAutomaticBackup(o.remoteNameFor(b)));
+});
+
+test('selectProtonToPrune prunes each bucket by DATE independently (newest kept)', () => {
     const entries = [
-        { name: 'C (s3).tar', date: '2026-07-24T03:00:00.000Z' }, // newest
-        { name: 'A (s1).tar', date: '2026-07-24T01:00:00.000Z' }, // oldest
-        { name: 'B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
+        { name: 'Automatic backup C (s3).tar', date: '2026-07-24T03:00:00.000Z' }, // auto newest
+        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' }, // auto oldest
+        { name: 'Automatic backup B (s2).tar', date: '2026-07-24T02:00:00.000Z' }, // auto mid
+        { name: 'Matter Server (m1).tar', date: '2026-07-24T05:00:00.000Z' },      // app newest
+        { name: 'Core Add-on (m2).tar', date: '2026-07-24T04:00:00.000Z' },        // app oldest
     ];
-    const prune = o.selectProtonToPrune(entries, 1); // keep 1 newest → prune 2 oldest
-    assert.deepEqual(prune.sort(), ['A (s1).tar', 'B (s2).tar']);
+    // keep 1 automatic + 1 app → prune 2 oldest automatic + 1 oldest app.
+    const prune = o.selectProtonToPrune(entries, 1, 1);
+    assert.deepEqual(prune.sort(), [
+        'Automatic backup A (s1).tar',
+        'Automatic backup B (s2).tar',
+        'Core Add-on (m2).tar',
+    ]);
 });
 
-test('selectProtonToPrune: retention 0/negative keeps everything', () => {
-    const entries = [{ name: 'A (s1).tar', date: '2026-07-24T01:00:00.000Z' }];
-    assert.deepEqual(o.selectProtonToPrune(entries, 0), []);
-    assert.deepEqual(o.selectProtonToPrune(entries, -1), []);
-});
-
-test('selectProtonToPrune keeps all when count <= retention', () => {
+test('selectProtonToPrune: an app-backup burst does NOT evict automatic backups', () => {
     const entries = [
-        { name: 'A (s1).tar', date: '2026-07-24T01:00:00.000Z' },
-        { name: 'B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
+        { name: 'Automatic backup 1 (a1).tar', date: '2026-07-20T00:00:00.000Z' },
+        { name: 'Automatic backup 2 (a2).tar', date: '2026-07-21T00:00:00.000Z' },
+        // A burst of many recent app backups.
+        { name: 'Add-on X (b1).tar', date: '2026-07-22T00:00:00.000Z' },
+        { name: 'Add-on Y (b2).tar', date: '2026-07-23T00:00:00.000Z' },
+        { name: 'Add-on Z (b3).tar', date: '2026-07-24T00:00:00.000Z' },
     ];
-    assert.deepEqual(o.selectProtonToPrune(entries, 5), []);
+    // Keep all automatic (0), keep 1 app → only app backups are pruned; both
+    // automatic survive despite being older than the app burst.
+    const prune = o.selectProtonToPrune(entries, 0, 1);
+    assert.deepEqual(prune.sort(), ['Add-on X (b1).tar', 'Add-on Y (b2).tar']);
+    assert.ok(!prune.some((n) => o.isAutomaticBackup(n)), 'automatic bucket untouched');
 });
 
-test('selectHALocalToPrune deletes oldest-first beyond keep — ONLY slugs in Proton', () => {
-    const ha = [
-        { slug: 'newest', date: '2026-07-24T04:00:00.000Z' },
-        { slug: 'oldest', date: '2026-07-24T01:00:00.000Z' },
-        { slug: 'mid1', date: '2026-07-24T02:00:00.000Z' },
-        { slug: 'mid2', date: '2026-07-24T03:00:00.000Z' },
+test('selectProtonToPrune: 0/negative keep per bucket keeps that bucket entirely', () => {
+    const entries = [
+        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' },
+        { name: 'App B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
     ];
-    // keep newest 1 → candidates are oldest, mid1, mid2. All in Proton → all deleted.
-    const proton = new Set(['oldest', 'mid1', 'mid2', 'newest']);
-    assert.deepEqual(o.selectHALocalToPrune(ha, proton, 1), ['oldest', 'mid1', 'mid2']);
+    assert.deepEqual(o.selectProtonToPrune(entries, 0, 0), []);
+    assert.deepEqual(o.selectProtonToPrune(entries, -1, -1), []);
 });
 
-test('SAFETY: selectHALocalToPrune NEVER returns a slug not present in Proton', () => {
-    const ha = [
-        { slug: 'newest', date: '2026-07-24T04:00:00.000Z' },
-        { slug: 'oldest', date: '2026-07-24T01:00:00.000Z' }, // NOT in Proton
-        { slug: 'mid', date: '2026-07-24T02:00:00.000Z' },     // in Proton
+test('selectProtonToPrune keeps all when each bucket count <= its keep', () => {
+    const entries = [
+        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' },
+        { name: 'App B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
     ];
-    const proton = new Set(['mid', 'newest']); // 'oldest' deliberately absent
-    const del = o.selectHALocalToPrune(ha, proton, 1);
-    // 'oldest' is the oldest and beyond keep, but it is NOT mirrored → must be kept.
-    assert.deepEqual(del, ['mid']);
-    assert.ok(!del.includes('oldest'), 'must never delete an un-mirrored backup');
-    // With nothing mirrored, nothing is ever deletable regardless of age/count.
-    assert.deepEqual(o.selectHALocalToPrune(ha, new Set(), 1), []);
-    assert.deepEqual(o.selectHALocalToPrune(ha, [], 1), []);
+    assert.deepEqual(o.selectProtonToPrune(entries, 5, 5), []);
 });
 
-test('selectHALocalToPrune: keep<=0 deletes nothing; accepts a Set or array', () => {
+test('selectHALocalToPrune deletes oldest-first beyond keep, per bucket — ONLY slugs in Proton', () => {
     const ha = [
-        { slug: 'a', date: '2026-07-24T01:00:00.000Z' },
-        { slug: 'b', date: '2026-07-24T02:00:00.000Z' },
+        { slug: 'auto-new', name: 'Automatic backup 4', date: '2026-07-24T04:00:00.000Z' },
+        { slug: 'auto-old', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' },
+        { slug: 'auto-mid', name: 'Automatic backup 2', date: '2026-07-24T02:00:00.000Z' },
+        { slug: 'app-new', name: 'Add-on B', date: '2026-07-24T05:00:00.000Z' },
+        { slug: 'app-old', name: 'Add-on A', date: '2026-07-24T03:00:00.000Z' },
     ];
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['a', 'b'], 0), []);
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['a', 'b'], -3), []);
-    // array form works the same as a Set
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['a'], 1), ['a']);
+    const proton = new Set(['auto-new', 'auto-old', 'auto-mid', 'app-new', 'app-old']);
+    // keep newest 1 automatic + 1 app → delete 2 oldest automatic + 1 oldest app.
+    assert.deepEqual(
+        o.selectHALocalToPrune(ha, proton, 1, 1).sort(),
+        ['app-old', 'auto-mid', 'auto-old'],
+    );
 });
 
-test('selectHALocalToPrune keeps everything when count <= keep', () => {
+test('SAFETY: selectHALocalToPrune NEVER returns an un-mirrored slug, in EITHER bucket', () => {
     const ha = [
-        { slug: 'a', date: '2026-07-24T01:00:00.000Z' },
-        { slug: 'b', date: '2026-07-24T02:00:00.000Z' },
+        { slug: 'auto-new', name: 'Automatic backup 3', date: '2026-07-24T04:00:00.000Z' },
+        { slug: 'auto-old', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' }, // NOT in Proton
+        { slug: 'auto-mid', name: 'Automatic backup 2', date: '2026-07-24T02:00:00.000Z' }, // in Proton
+        { slug: 'app-new', name: 'Add-on B', date: '2026-07-24T05:00:00.000Z' },
+        { slug: 'app-old', name: 'Add-on A', date: '2026-07-24T03:00:00.000Z' },            // NOT in Proton
     ];
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['a', 'b'], 5), []);
+    // 'auto-old' and 'app-old' are the oldest in their buckets & beyond keep, but
+    // neither is mirrored → both must be kept.
+    const proton = new Set(['auto-mid', 'auto-new', 'app-new']);
+    const del = o.selectHALocalToPrune(ha, proton, 1, 1);
+    assert.deepEqual(del.sort(), ['auto-mid']);
+    assert.ok(!del.includes('auto-old'), 'must never delete an un-mirrored automatic backup');
+    assert.ok(!del.includes('app-old'), 'must never delete an un-mirrored app backup');
+    // With nothing mirrored, nothing is ever deletable in either bucket.
+    assert.deepEqual(o.selectHALocalToPrune(ha, new Set(), 1, 1), []);
+    assert.deepEqual(o.selectHALocalToPrune(ha, [], 1, 1), []);
+});
+
+test('selectHALocalToPrune: keep<=0 per bucket deletes nothing there; accepts a Set or array', () => {
+    const ha = [
+        { slug: 'auto', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' },
+        { slug: 'app', name: 'Add-on A', date: '2026-07-24T02:00:00.000Z' },
+    ];
+    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], 0, 0), []);
+    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], -3, -3), []);
+    // keep app bucket off (0) but prune the (single) automatic beyond keep... none beyond keep 0? keep<=0=none.
+    // With keepAutomatic=0 nothing in automatic bucket is deletable; array form still honoured for app.
+    assert.deepEqual(o.selectHALocalToPrune(
+        [{ slug: 'app', name: 'Add-on A', date: '1' }, { slug: 'app2', name: 'Add-on B', date: '2' }],
+        ['app', 'app2'], 0, 1,
+    ), ['app']);
+});
+
+test('selectHALocalToPrune keeps everything when each bucket count <= its keep', () => {
+    const ha = [
+        { slug: 'auto', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' },
+        { slug: 'app', name: 'Add-on A', date: '2026-07-24T02:00:00.000Z' },
+    ];
+    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], 5, 5), []);
+});
+
+test('getConfig returns effective config with password only as a boolean', async () => {
+    const saved = { ...process.env };
+    try {
+        process.env.DRIVE_FOLDER = 'My Backups';
+        process.env.BACKUP_INTERVAL_HOURS = '12';
+        process.env.KEEP_AUTOMATIC_IN_PROTON = '7';
+        process.env.KEEP_APP_IN_PROTON = '3';
+        process.env.KEEP_AUTOMATIC_IN_HA = '2';
+        process.env.KEEP_APP_IN_HA = '0';
+        process.env.BACKUP_PASSWORD = 'super-secret';
+        delete process.env.STAGING_DIR;
+        const c = o.getConfig();
+        assert.deepEqual(c, {
+            driveFolder: 'My Backups',
+            intervalHours: 12,
+            keepAutomaticInProton: 7,
+            keepAppInProton: 3,
+            keepAutomaticInHA: 2,
+            keepAppInHA: 0,
+            backupPasswordSet: true,
+            stagingDir: null,
+        });
+        // The password value itself must never appear anywhere in the output.
+        assert.ok(!JSON.stringify(c).includes('super-secret'));
+        // No password set → boolean false.
+        delete process.env.BACKUP_PASSWORD;
+        assert.equal(o.getConfig().backupPasswordSet, false);
+    } finally {
+        for (const k of ['DRIVE_FOLDER', 'BACKUP_INTERVAL_HOURS', 'KEEP_AUTOMATIC_IN_PROTON', 'KEEP_APP_IN_PROTON', 'KEEP_AUTOMATIC_IN_HA', 'KEEP_APP_IN_HA', 'BACKUP_PASSWORD', 'STAGING_DIR']) {
+            if (k in saved) process.env[k] = saved[k]; else delete process.env[k];
+        }
+    }
 });

@@ -21,8 +21,10 @@ function readConfig() {
     return {
         driveFolder: process.env.DRIVE_FOLDER || 'Home Assistant Backups',
         intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0,
-        backupsInProton: parseInt(process.env.BACKUPS_IN_PROTON || '0', 10) || 0,
-        backupsInHA: parseInt(process.env.BACKUPS_IN_HA || '0', 10) || 0,
+        keepAutomaticInProton: parseInt(process.env.KEEP_AUTOMATIC_IN_PROTON || '0', 10) || 0,
+        keepAppInProton: parseInt(process.env.KEEP_APP_IN_PROTON || '0', 10) || 0,
+        keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
+        keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
         logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
         port: parseInt(process.env.PORT || '8099', 10),
         dataDir: process.env.DATA_DIR || '/data',
@@ -36,7 +38,8 @@ async function main() {
     console.log('Starting Proton Drive Backup add-on');
     console.log(
         `Config: folder="${config.driveFolder}", check interval=${config.intervalHours}h, ` +
-            `proton retention=${config.backupsInProton}, HA manual retention=${config.backupsInHA}`,
+            `proton retention=${config.keepAutomaticInProton} automatic/${config.keepAppInProton} app, ` +
+            `HA manual retention=${config.keepAutomaticInHA} automatic/${config.keepAppInHA} app`,
     );
     console.debug(`[main] Full config: ${JSON.stringify(config)}`);
 

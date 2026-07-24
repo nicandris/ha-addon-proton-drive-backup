@@ -7,6 +7,16 @@
 
 ## Latest release highlights
 
+- **0.4.0** — **Split retention into two independent buckets: automatic vs app**,
+  classified **by name** (a name starting with "Automatic backup" is *automatic*;
+  everything else is *app*). Previously a single total per side let a burst of
+  small per-add-on "app" backups evict the important scheduled "Automatic backup"
+  ones. **Config migration:** `backups_in_proton` → `keep_automatic_in_proton` +
+  `keep_app_in_proton` (both default `10`); `backups_in_ha` → `keep_automatic_in_ha`
+  + `keep_app_in_ha` (both default `0`). The HA-clean-up safety invariant (never
+  delete an un-mirrored backup) now holds independently in each bucket. The Web UI
+  gains a read-only **Settings** card (password shown only as a boolean) and
+  per-bucket counts in the statistics card.
 - **0.3.0** — **New mirror model.** The add-on no longer creates backups; it now
   **mirrors Home Assistant's own backups** (automatic + manual) to Proton Drive,
   deduping by the HA backup slug (remote name `<name> (<slug>).tar`). "Back up
