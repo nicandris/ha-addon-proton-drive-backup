@@ -18,6 +18,7 @@
 
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 
 import * as supervisor from './supervisor.mjs';
 import * as cli from './protonCli.mjs';
@@ -67,7 +68,16 @@ function cfg() {
 }
 
 function tmpDir() {
-    return join(cfg().dataDir, 'tmp');
+    // Stage downloads OUTSIDE /data. HA full-backups include the add-on's /data
+    // volume, so a backup created while a temp `.tar` sat in /data/tmp would
+    // swallow it (observed: a 4.87 GB backup ballooning to 9.74 GB). The
+    // container's tmpdir is ephemeral and is never part of an HA backup.
+    return process.env.STAGING_DIR || join(tmpdir(), 'proton-drive-backup');
+}
+
+/** A download error for a backup HA lists but no longer serves (stale/phantom). */
+export function isNotFoundError(err) {
+    return err?.status === 404;
 }
 
 /** Resolve (and create if needed) the remote backup folder under /my-files. */
@@ -217,6 +227,7 @@ async function syncBackupsToProton() {
 
     let uploaded = 0;
     let errors = 0;
+    let skipped = 0;
     for (const item of toUpload) {
         // Stage the local file under its final remote name so the CLI upload
         // (which derives the remote name from the local basename) produces
@@ -231,14 +242,22 @@ async function syncBackupsToProton() {
             uploaded++;
             console.debug(`[orchestrator] Upload of "${item.remoteName}" complete`);
         } catch (err) {
-            errors++;
-            state.lastError = `Upload of ${item.slug} failed: ${describeError(err)}`;
-            console.error(`[orchestrator] ${state.lastError}`);
+            if (isNotFoundError(err)) {
+                // HA lists this backup but no longer serves it (stale/phantom
+                // entry). Nothing we can upload — skip quietly, don't raise a
+                // hard error that dominates the UI on every sync.
+                skipped++;
+                console.warn(`[orchestrator] Skipping ${item.slug} ("${item.name}") — HA no longer serves this backup (404); likely a stale/removed entry, delete it in HA to silence this.`);
+            } else {
+                errors++;
+                state.lastError = `Upload of ${item.slug} failed: ${describeError(err)}`;
+                console.error(`[orchestrator] ${state.lastError}`);
+            }
         } finally {
             await rm(tmpPath, { force: true }).catch(() => {});
         }
     }
-    console.debug(`[orchestrator] syncBackupsToProton done: ${uploaded} uploaded, ${errors} errors`);
+    console.debug(`[orchestrator] syncBackupsToProton done: ${uploaded} uploaded, ${skipped} skipped, ${errors} errors`);
 }
 
 export async function pruneProton() {
