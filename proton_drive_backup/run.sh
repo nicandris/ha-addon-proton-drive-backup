@@ -3,7 +3,6 @@ export DRIVE_FOLDER="$(bashio::config 'drive_folder')"
 export BACKUP_INTERVAL_HOURS="$(bashio::config 'backup_interval_hours')"
 export BACKUPS_IN_PROTON="$(bashio::config 'backups_in_proton')"
 export BACKUPS_IN_HA="$(bashio::config 'backups_in_ha')"
-export FULL_BACKUP="$(bashio::config 'full_backup')"
 if bashio::config.has_value 'backup_password'; then
     export BACKUP_PASSWORD="$(bashio::config 'backup_password')"
 else
