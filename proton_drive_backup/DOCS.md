@@ -1,10 +1,12 @@
 # Proton Drive Backup
 
-This app automatically backs up your Home Assistant instance to
-[Proton Drive](https://proton.me/drive). It runs entirely inside a single
-container: it asks the Supervisor to create backups, then uploads them to your
-Proton Drive using Proton's official first-party `proton-drive` CLI, on a
-schedule, with retention limits and an ingress web UI.
+This app **mirrors your Home Assistant backups** to
+[Proton Drive](https://proton.me/drive) — much like the Google Drive backup
+add-on. It does **not** create backups itself. You make backups however you like
+in Home Assistant (the built-in automatic backup, manual snapshots, other
+add-ons), and this app copies every one of them offsite to your Proton Drive
+using Proton's official first-party `proton-drive` CLI — on boot, on a check
+interval, and on demand — with retention limits and an ingress web UI.
 
 **No Proton credentials are ever entered into or stored by the app** — you sign
 in through Proton's own browser login (see [Authentication](#authentication)).
@@ -14,18 +16,20 @@ Requires Home Assistant **OS** or **Supervised** on **amd64** or **aarch64**
 
 ## How it works
 
-1. On a schedule (`backup_interval_hours`), the app calls the Supervisor
-   backup API to create a backup of Home Assistant, named
-   `Proton Drive Backup <ISO timestamp>`.
-2. Any of the app's backups not yet in Proton Drive are uploaded to the
-   configured folder as `<name>.tar`.
-3. Old backups are pruned from both Proton Drive and Home Assistant according to
-   your retention settings.
+1. On boot, on the `backup_interval_hours` check interval, and when you click
+   **Sync now**, the app lists **all** Home Assistant backups (automatic and
+   manual) and everything already in the Proton Drive folder.
+2. Any HA backup not yet in Proton Drive is uploaded to the configured folder as
+   `<name> (<slug>).tar` (e.g. `Automatic backup 2026.7.3 (a1b2c3d4).tar`).
+3. Proton Drive is pruned to `backups_in_proton` automatically (oldest by date
+   first). Local Home Assistant backups are **only** cleaned up when you press
+   **Clean up local backups**, and only when they are already in Proton (see
+   below).
 
-The CLI has no metadata API, so backups are identified purely by **filename**.
-Only backups named `Proton Drive Backup <timestamp>` (those created by this app)
-are pruned — any backups you create manually or with other tools are left
-untouched.
+The CLI has no metadata API, so remote backups are identified by **filename**.
+The `(slug)` suffix is the Home Assistant backup's stable, unique id — it drives
+deduplication (a backup already in Proton is never re-uploaded) and lets restore
+map a Proton file back to a backup.
 
 ## Configuration
 
@@ -34,11 +38,10 @@ Set these on the app's **Configuration** tab, then **Save** and restart the app.
 | Option                  | Default                  | Description                                                                                                                                                          |
 | ----------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `drive_folder`          | `Home Assistant Backups` | Folder path under your Proton Drive **My files** where backups are stored. Created if it does not exist.                                                             |
-| `backup_interval_hours` | `24`                     | How often, in hours, to create and upload a backup. Set to `0` to never auto-create a backup — the app still uploads and prunes existing backups (upload-only mode). |
-| `backups_in_proton`     | `10`                     | How many of the app's backups to keep in Proton Drive. Older ones beyond this count are trashed. `0` keeps all.                                                     |
-| `backups_in_ha`         | `4`                      | How many of the app's backups to keep locally in Home Assistant. `0` keeps all.                                                                                     |
-| `full_backup`           | `true`                   | `true` for full backups, `false` for partial (Home Assistant only) backups.                                                                                          |
-| `backup_password`       | (empty)                  | Optional password to encrypt the backup archive itself. Leave empty for unencrypted backups.                                                                         |
+| `backup_interval_hours` | `24`                     | How often, in hours, to **check** Home Assistant for new backups to upload. The app also syncs on boot and whenever you click **Sync now**. `0` = check on boot and manually only. |
+| `backups_in_proton`     | `10`                     | How many mirrored backups to keep in Proton Drive. Older ones (by date) beyond this count are trashed automatically each sync. `0` keeps all.                        |
+| `backups_in_ha`         | `4`                      | How many backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button — never automatically. `0` disables local clean-up. |
+| `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty if they are not.                                 |
 | `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Can also be changed at runtime from the Web UI.                        |
 
 There is **no email / password / 2FA option** — authentication is handled by
@@ -90,8 +93,19 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
   shows an animated **Syncing…** badge with the current step (for example
   *"Uploading 2 of 3: &lt;name&gt;"*) and a progress bar, so a long multi-minute
   upload never looks frozen. When idle it shows a plain badge.
-- **Back up now** — trigger an immediate backup and upload. The button shows
-  "Syncing…" and is disabled while a sync is already in progress.
+- See **statistics** — how many backups are in Home Assistant vs mirrored in
+  Proton Drive (with sizes), host disk free, and last-backup / next-sync times.
+  On wide screens the status and statistics cards sit **side by side**.
+- **Sync now** — upload any existing Home Assistant backups not yet in Proton
+  Drive. The button shows "Syncing…" and is disabled while a sync is already in
+  progress.
+- **Clean up local backups** — manually delete local Home Assistant backups
+  beyond the newest `backups_in_ha`, but **only** ones already copied to Proton
+  Drive. It asks for confirmation and then reports how many were deleted and how
+  many were skipped because they aren't mirrored yet. This is the **only** way
+  the app deletes local backups — it never does so automatically, and it will
+  never delete a backup that isn't safely offsite. Disabled when `backups_in_ha`
+  is `0`.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
   The app downloads the chosen archive from Proton, hands it to the Supervisor,
   and starts a full restore.
@@ -104,9 +118,9 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 
 - Communication with Proton is over HTTPS.
 - Backups are end-to-end encrypted client-side by Proton (via the `proton-drive`
-  CLI) before upload, so Proton never sees their contents. Optionally,
-  `backup_password` also encrypts the backup archive before it leaves Home
-  Assistant.
+  CLI) before upload, so Proton never sees their contents. If your Home Assistant
+  backups are themselves encrypted, set `backup_password` so the app can decrypt
+  them when restoring.
 - **The app never stores your Proton password** or two-factor secrets — sign-in
   happens entirely in Proton's browser login. This is a significant improvement
   over the app's previous design.
