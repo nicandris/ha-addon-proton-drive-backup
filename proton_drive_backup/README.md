@@ -20,7 +20,9 @@ ships no CLI build for other architectures).
 3. Open the **Web UI** and click **Connect to Proton Drive**. Open the sign-in
    link it shows on any device (phone or PC) and complete sign-in with Proton
    (including your normal two-factor, if enabled).
-4. The app then creates and uploads backups on the configured schedule.
+4. The app then creates and uploads backups on the configured schedule. The Web
+   UI shows a live status indicator — a connection badge and, during a sync, an
+   animated **Syncing…** badge with the current step and a progress bar.
 
 See [DOCS.md](DOCS.md) for full configuration and usage details.
 
