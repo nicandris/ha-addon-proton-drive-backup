@@ -262,7 +262,7 @@ async function refresh() {
         ['error','warning','info','debug'].map(function(l){ return '<option value="'+l+'"'+(s.logLevel===l?' selected':'')+'>'+l+'</option>'; }).join('') +
         '</select>' +
       '</span></div>' +
-      (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + '</span></div>' : '');
+      (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + ' <button class="ghost" style="padding:.1rem .5rem;font-size:.75rem" onclick="clearErr()">Clear</button></span></div>' : '');
 
     var syncBtn = document.getElementById('syncNow');
     syncBtn.disabled = syncing;
@@ -413,6 +413,10 @@ document.getElementById('disconnectBtn').onclick = async function(){
   } catch (e) { alert('Error: ' + e); }
   refresh();
 };
+async function clearErr() {
+  try { await fetch('api/clear-error', { method: 'POST' }); } catch (e) { /* refresh will re-show if it failed */ }
+  refresh();
+}
 async function changeLogLevel(level) {
   try {
     await fetch('api/log-level', {
@@ -529,6 +533,12 @@ async function handle(req, res) {
     if (method === 'POST' && path === '/api/create-backup') {
         orchestrator.createBackupNow().catch((err) => console.error(`[ingress] create-backup: ${err.message}`));
         sendJson(res, 200, { started: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/clear-error') {
+        orchestrator.clearError();
+        sendJson(res, 200, { ok: true });
         return;
     }
 

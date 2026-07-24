@@ -10,6 +10,8 @@
   compete. Backups are classified **by name**: anything whose name starts with
   "Automatic backup" is *automatic*; everything else is *app*. This works on both
   an HA backup name and a Proton remote filename.
+- **Clear error button.** A "Clear" button next to *Last error* dismisses a
+  stale error without waiting for the next successful sync.
 - **Config migration — action may be needed.** The two old options were
   **replaced** by four new ones:
   - `backups_in_proton` → **`keep_automatic_in_proton`** (default `10`) +
