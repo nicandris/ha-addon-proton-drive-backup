@@ -48,6 +48,12 @@ const state = {
 let cachedFolderKey = null;
 let cachedFolderPath = null;
 
+// Guards against overlapping syncs. runSync is triggered from several places
+// (startup, the scheduler, post-login, and "back up now"); two at once make HA
+// reject the second createBackup with "system is not running - freeze" and race
+// on retention. Only one sync runs at a time.
+let syncing = false;
+
 function cfg() {
     return {
         driveFolder: process.env.DRIVE_FOLDER || 'Home Assistant Backups',
@@ -76,7 +82,9 @@ async function remoteFolder() {
 
 /** Our remote files: `<name>.tar` where name starts with the add-on prefix. */
 export function isOurRemoteFile(name) {
-    return name.startsWith(ADDON_BACKUP_PREFIX) && name.endsWith('.tar');
+    return typeof name === 'string'
+        && name.startsWith(ADDON_BACKUP_PREFIX)
+        && name.endsWith('.tar');
 }
 
 /** Is this HA backup one this add-on created? */
@@ -277,6 +285,11 @@ export async function pruneHA() {
 }
 
 export async function runSync() {
+    if (syncing) {
+        console.warn('[orchestrator] runSync: a sync is already running — skipping this trigger');
+        return;
+    }
+    syncing = true;
     console.debug('[orchestrator] runSync: started');
     try {
         state.lastError = null;
@@ -318,6 +331,8 @@ export async function runSync() {
     } catch (err) {
         state.lastError = describeError(err);
         console.error(`[orchestrator] Sync failed: ${state.lastError}`);
+    } finally {
+        syncing = false;
     }
 }
 
