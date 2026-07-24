@@ -1,10 +1,11 @@
 /**
  * Entry point for the Proton Drive Backup add-on.
  *
- * Initializes crypto, ensures the temp directory exists, starts the ingress
- * server, runs an initial sync shortly after startup, and (if configured)
- * schedules recurring syncs. Logs to stdout with timestamps and exits cleanly
- * on SIGTERM.
+ * Ensures the temp directory exists, starts the ingress server, runs an initial
+ * sync shortly after startup, and (if configured) schedules recurring syncs.
+ * Authentication is owned by the proton-drive CLI (browser sign-in via the Web
+ * UI), so there is no crypto/login setup here. Logs to stdout with timestamps
+ * and exits cleanly on SIGTERM.
  */
 
 // Must be first import so console is patched before any other module logs.
@@ -13,13 +14,11 @@ import { setLogLevel } from './logger.mjs';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import { setupCrypto } from './cryptoSetup.mjs';
 import { startIngressServer } from './ingress.mjs';
 import { runSync, setNextSyncEpoch } from './orchestrator.mjs';
 
 function readConfig() {
     return {
-        protonEmail: process.env.PROTON_EMAIL || '',
         driveFolder: process.env.DRIVE_FOLDER || 'Home Assistant Backups',
         intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0,
         backupsInProton: parseInt(process.env.BACKUPS_IN_PROTON || '0', 10) || 0,
@@ -41,16 +40,7 @@ async function main() {
             `proton retention=${config.backupsInProton}, HA retention=${config.backupsInHA}, ` +
             `full=${config.fullBackup}`,
     );
-    console.debug(
-        `[main] Full config: ${JSON.stringify({
-            ...config,
-            protonEmail: config.protonEmail ? config.protonEmail : '(not set)',
-        })}`,
-    );
-
-    console.debug('[main] Initializing OpenPGP crypto...');
-    await setupCrypto();
-    console.debug('[main] Crypto ready');
+    console.debug(`[main] Full config: ${JSON.stringify(config)}`);
 
     await mkdir(join(config.dataDir, 'tmp'), { recursive: true });
     console.debug(`[main] Temp dir: ${join(config.dataDir, 'tmp')}`);
