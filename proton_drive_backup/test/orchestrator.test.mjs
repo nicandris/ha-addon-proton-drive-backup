@@ -52,6 +52,14 @@ test('getStatus exposes idle sync fields by default', () => {
     assert.ok('lastSync' in s && 'lastError' in s && 'needsLogin' in s);
 });
 
+test('isBusyError detects HA freeze / not-running / blocked, not other errors', () => {
+    assert.equal(o.isBusyError(new Error("'BackupManager.do_backup_full' blocked from execution, system is not running - freeze")), true);
+    assert.equal(o.isBusyError(new Error('Backup is running - freeze')), true);
+    assert.equal(o.isBusyError(new Error('system is not running')), true);
+    assert.equal(o.isBusyError(new Error('Some other failure')), false);
+    assert.equal(o.isBusyError(null), false);
+});
+
 test('isNotFoundError is true only for a 404-tagged error', () => {
     assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 404 })), true);
     assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 500 })), false);
