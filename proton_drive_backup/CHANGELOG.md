@@ -15,17 +15,18 @@
 ## 0.2.0
 
 - **Switched to Proton's official first-party `proton-drive` CLI.** The previous
-  releases used the pre-release Drive SDK plus a hand-rolled SRP/2FA/crypto auth
-  against Proton's account API — a path Proton permanently blocks for
-  third-party clients (Sentinel `Code 2028`). The add-on now shells out to the
-  official CLI, which sidesteps that gating.
+  releases used the pre-release Drive SDK plus a hand-rolled login/2FA/crypto
+  flow against Proton's account API — a path Proton permanently blocks for
+  third-party clients (a hard `HTTP 422` account block with no client-side
+  workaround). The add-on now shells out to the official CLI, which resolves
+  that gating.
 - **Auth is now a browser sign-in.** Click **Connect** in the Web UI; the app
   shows a Proton sign-in URL you open on any device (phone or PC). No email,
   password, or 2FA code is entered into or stored by the add-on, and there is no
   session encryption to manage — the CLI persists its own session under `/data`,
   so it survives restarts.
-- **Removed** the `proton_email` / `proton_password` options and all
-  2FA / human-verification UI and endpoints.
+- **Removed** the account email / password options and all 2FA / verification
+  UI and endpoints.
 - **Backups are now identified by filename** (`Proton Drive Backup <ISO>.tar`),
   since the CLI has no metadata API. Retention sorts by that timestamped name.
 - **Architecture limited to `amd64` and `aarch64`** — Proton ships no
@@ -33,43 +34,42 @@
 
 ## 0.1.11
 
-- **Auth correctness fixes** verified against ProtonMail/WebClients and
-  `@protontech/crypto`:
+- **Auth correctness fixes** verified against ProtonMail/WebClients and Proton's
+  crypto library:
   - Match `KeySalt` to the primary address key by ID (was: first salt entry —
     multi-address accounts could derive the wrong key password).
   - FIDO2-only 2FA accounts now show a clear "enable TOTP" error instead of an
     unfillable code prompt.
-  - SRP module wired correctly for the SDK's sharing paths (passes username,
-    fetches modulus from `/core/v4/auth/modulus`, returns `modulusId`).
+  - Login-handshake module wired correctly for the SDK's sharing paths (passes
+    username, fetches modulus from `/core/v4/auth/modulus`, returns `modulusId`).
   - 30 s timeout on all auth API + token-refresh calls.
   - `getAuthVersionWithFallback` loop for legacy Version=0 accounts.
   - Token-refresh failure now resets `connected` so the UI no longer shows
     "connected" while Drive calls fail.
-  - Human-verification `ExpiresAt` surfaced with an inline expiry hint.
+  - Verification-challenge `ExpiresAt` surfaced with an inline expiry hint.
   - Canonical `/core/v4/auth/...` endpoint paths (vs the `auth/v4` aliases).
   - `Intent: "Proton"` + `PersistentCookies: 0` added to auth bodies;
     `RedirectURI` updated from `protonmail.ch` to `proton.me` on refresh.
 - **Runtime log-level control.** New log-level dropdown in the status card
   (`error` / `warning` / `info` / `debug`), `GET`/`POST /api/log-level`
-  endpoint, and verbose debug tracing across SRP, token refresh, key import,
+  endpoint, and verbose debug tracing across login, token refresh, key import,
   Drive folder resolution, upload/download/prune, Supervisor calls, and
   ingress routing.
 
 ## 0.1.10
 
 - **Add prominent warning** at the top of the repo README, app README, and
-  DOCS about the risk of Proton blocking third-party authentication (Code
-  2028) — most likely until Proton officially releases the Drive SDK for
-  third-party use.
+  DOCS about the risk of Proton blocking third-party authentication — most
+  likely until Proton officially releases the Drive SDK for third-party use.
 
 ## 0.1.9
 
 - **Honest halt messages.** Previously the halt message always said "sign in
-  at account.proton.me to verify it" even when Proton returned `Code 2028`
-  (Sentinel block), which has no in-web verification. The web UI's halt card
+  at account.proton.me to verify it" even when Proton returned a hard account
+  block (`HTTP 422`), which has no in-web verification. The web UI's halt card
   now shows the underlying Proton error on one line and a code-specific action
-  line on the next: for `2028` it advises waiting / different network / the
-  appeal form; for other rate-limit responses it points at the web sign-in
+  line on the next: for the hard block it advises waiting / different network /
+  the appeal form; for other rate-limit responses it points at the web sign-in
   verification step; for everything else it just says "fix the issue".
 
 ## 0.1.8
@@ -88,22 +88,21 @@
 
 ## 0.1.6
 
-- HumanVerification iframe now uses Proton's exact `postMessage` protocol
+- Human-check iframe now uses Proton's exact `postMessage` protocol
   (verified against the ProtonMail/WebClients `applications/verify` source):
-  strict origin + same-iframe checks, `embed=true` so the iframe sends RESIZE
-  events, and handling for `LOADED` / `RESIZE` / `HUMAN_VERIFICATION_SUCCESS` /
-  `CLOSE` / `ERROR` envelopes.
+  strict origin + same-iframe checks, `embed=true` so the iframe sends resize
+  events, and handling for the load / resize / success / close / error envelopes.
 
 ## 0.1.5
 
-- **Handle Proton's HumanVerification challenge (Code 9001).** When Proton asks
-  for a one-time human verification (common for new accounts or unrecognized
+- **Handle Proton's human-check challenge (Code 9001).** When Proton asks
+  for a one-time human check (common for new accounts or unrecognized
   clients), the web UI now embeds `verify.proton.me` in an iframe, captures the
-  solved token via `postMessage`, and retries the login with the
-  `x-pm-human-verification-token` headers. Status `needs verification` appears
+  solved token via `postMessage`, and retries the login with the appropriate
+  verification-token headers. Status `needs verification` appears
   in the UI; sync resumes automatically once the challenge is solved.
-- Note: this does **not** unblock a hard `Code 2028` Sentinel block — that path
-  needs a Proton support appeal.
+- Note: this does **not** unblock a hard account block — that path needs a
+  Proton support appeal.
 
 ## 0.1.4
 
@@ -117,7 +116,7 @@
   Changed to `ha_addon_proton_drive_backup` (this third-party project's own
   name), per Proton's "identify your application honestly" rule.
 - Login errors now report Proton's response **code, HTTP status, and any
-  Details** (e.g. a human-verification challenge), not just the message — so a
+  Details** (e.g. a verification challenge), not just the message — so a
   block can be diagnosed from the log/UI.
 - Send an honest `User-Agent` header on all requests.
 
