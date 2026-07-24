@@ -44,6 +44,13 @@ test('dateFromRemoteName extracts an ISO date, null on garbage', () => {
     assert.equal(o.dateFromRemoteName(`${PFX} not-a-date.tar`), null);
 });
 
+test('isNotFoundError is true only for a 404-tagged error', () => {
+    assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 404 })), true);
+    assert.equal(o.isNotFoundError(Object.assign(new Error('x'), { status: 500 })), false);
+    assert.equal(o.isNotFoundError(new Error('plain')), false);
+    assert.equal(o.isNotFoundError(null), false);
+});
+
 test('selectToUpload returns only our backups missing from Proton', () => {
     const ha = [
         { slug: 's1', name: `${PFX} 2026-07-24T01:00:00.000Z` }, // missing → upload
