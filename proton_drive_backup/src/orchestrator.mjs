@@ -42,7 +42,15 @@ const state = {
     lastError: null, // string
     nextSyncEpoch: null, // ms epoch of next scheduled sync
     needsLogin: false, // true when the CLI has no usable session
+    activity: null, // human-readable current step while syncing (null = idle)
+    progress: null, // { index, total } during multi-item uploads, else null
 };
+
+/** Update the live activity/progress shown in the UI while a sync runs. */
+function setActivity(activity, progress = null) {
+    state.activity = activity;
+    state.progress = progress;
+}
 
 // Cache of the resolved remote folder path, keyed by drive_folder, so we don't
 // re-run ensureFolder's CLI calls on every status poll.
@@ -172,6 +180,9 @@ export function getStatus() {
         lastError: state.lastError,
         nextSyncEpoch: state.nextSyncEpoch,
         needsLogin: state.needsLogin,
+        syncing,
+        activity: state.activity,
+        progress: state.progress,
     };
 }
 
@@ -228,7 +239,8 @@ async function syncBackupsToProton() {
     let uploaded = 0;
     let errors = 0;
     let skipped = 0;
-    for (const item of toUpload) {
+    for (const [i, item] of toUpload.entries()) {
+        setActivity(`Uploading ${i + 1} of ${toUpload.length}: ${item.name}`, { index: i + 1, total: toUpload.length });
         // Stage the local file under its final remote name so the CLI upload
         // (which derives the remote name from the local basename) produces
         // `<name>.tar` remotely.
@@ -312,6 +324,7 @@ export async function runSync() {
     console.debug('[orchestrator] runSync: started');
     try {
         state.lastError = null;
+        setActivity('Checking connection…');
         console.debug('[orchestrator] runSync: checking session...');
         const connected = await ensureSession();
         if (!connected) {
@@ -323,6 +336,7 @@ export async function runSync() {
 
         const { intervalHours, backupPassword, fullBackup } = cfg();
         if (intervalHours > 0) {
+            setActivity('Creating Home Assistant backup…');
             const name = `${ADDON_BACKUP_PREFIX} ${new Date().toISOString()}`;
             console.log(`[orchestrator] Creating new HA backup "${name}"`);
             console.debug(`[orchestrator] Backup params: full=${fullBackup} password=${backupPassword ? 'set' : 'none'}`);
@@ -338,8 +352,10 @@ export async function runSync() {
         }
 
         console.debug('[orchestrator] runSync: syncing to Proton...');
+        setActivity('Checking Proton Drive…');
         await syncBackupsToProton();
         console.debug('[orchestrator] runSync: pruning Proton...');
+        setActivity('Pruning old backups…');
         await pruneProton();
         console.debug('[orchestrator] runSync: pruning HA...');
         await pruneHA();
@@ -352,6 +368,7 @@ export async function runSync() {
         console.error(`[orchestrator] Sync failed: ${state.lastError}`);
     } finally {
         syncing = false;
+        setActivity(null);
     }
 }
 
