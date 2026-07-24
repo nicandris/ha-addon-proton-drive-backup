@@ -24,6 +24,13 @@ test('isOurRemoteFile matches our prefix + .tar only', () => {
     assert.equal(o.isOurRemoteFile(`${PFX} 2026-07-24T10:00:00.000Z`), false); // no .tar
 });
 
+test('isOurRemoteFile is false for non-string input (regression: name.startsWith crash)', () => {
+    assert.equal(o.isOurRemoteFile(123), false);
+    assert.equal(o.isOurRemoteFile(null), false);
+    assert.equal(o.isOurRemoteFile(undefined), false);
+    assert.equal(o.isOurRemoteFile({ name: 'x' }), false);
+});
+
 test('isOurHABackup matches our prefix and tolerates missing name', () => {
     assert.equal(o.isOurHABackup({ name: `${PFX} x` }), true);
     assert.equal(o.isOurHABackup({ name: 'Manual snapshot' }), false);

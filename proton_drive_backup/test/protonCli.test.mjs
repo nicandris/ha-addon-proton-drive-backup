@@ -127,6 +127,20 @@ test('list() drops entries without a name', async () => {
     assert.deepEqual(r.map((e) => e.name), ['ok.tar']);
 });
 
+test('list() coerces an array of bare filename strings', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify(['a.tar', 'b.tar']);
+    const r = await cli.list('/my-files/x');
+    assert.deepEqual(r.map((e) => e.name), ['a.tar', 'b.tar']);
+});
+
+test('list() drops entries whose name is not a string', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([{ name: 123 }, { name: { nested: 1 } }, { name: 'ok.tar' }]);
+    const r = await cli.list('/my-files/x');
+    assert.deepEqual(r.map((e) => e.name), ['ok.tar']);
+});
+
 test('list() returns [] on invalid JSON', async () => {
     clearFake();
     process.env.FAKE_LIST_JSON = 'not json at all {';
