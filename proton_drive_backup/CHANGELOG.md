@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1
+
+- **Manual "Create backup" button.** Creates a new full Home Assistant backup on
+  demand and immediately uploads it to Proton. On-demand only — there is still no
+  automatic/scheduled creation. "Sync now" continues to only upload existing
+  backups. If Home Assistant is busy, the button reports it and does nothing.
+
 ## 0.3.0
 
 - **New model: mirror Home Assistant's own backups to Proton Drive** (like the
