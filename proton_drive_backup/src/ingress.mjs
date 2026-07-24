@@ -81,10 +81,17 @@ async function buildStatus() {
         const gb = (v) => (typeof v === 'number' ? Math.round(v * 1024 * 1024 * 1024) : null);
         const dates = [...(backups || []).map((b) => b.date), ...haBackups.map((b) => b.date)]
             .filter(Boolean).map((d) => new Date(d).getTime()).filter((n) => !isNaN(n));
+        // Split each side into automatic vs app buckets (classified BY NAME).
+        const haAuto = haBackups.filter((b) => orchestrator.isAutomaticBackup(b.name)).length;
+        const protonAuto = (backups || []).filter((b) => orchestrator.isAutomaticBackup(b.name)).length;
         stats = {
             haCount: haBackups.length,
+            haAutomaticCount: haAuto,
+            haAppCount: haBackups.length - haAuto,
             haSizeBytes: Math.round(haSizeMB * 1024 * 1024),
             protonCount: (backups || []).length,
+            protonAutomaticCount: protonAuto,
+            protonAppCount: (backups || []).length - protonAuto,
             protonSizeBytes,
             hostDiskFreeBytes: gb(host?.disk_free),
             hostDiskTotalBytes: gb(host?.disk_total),
@@ -109,7 +116,7 @@ async function buildStatus() {
         loginError: state.loginError,
         logLevel: getLogLevel(),
         schedule: scheduleSummary(),
-        backupsInHA: parseInt(process.env.BACKUPS_IN_HA || '0', 10) || 0,
+        settings: orchestrator.getConfig(),
         lastSync: status.lastSync,
         lastError: status.lastError || backupsError,
         nextSyncEpoch: status.nextSyncEpoch,
@@ -186,6 +193,7 @@ function renderPage() {
 <div class="grid">
   <div class="card" id="statusCard">Loading…</div>
   <div class="card" id="statsCard" style="display:none"></div>
+  <div class="card" id="settingsCard" style="display:none"></div>
 </div>
 <div class="card" id="connectCard" style="display:none">
   <h2 style="font-size:1.1rem">Connect to Proton Drive</h2>
@@ -223,7 +231,8 @@ function fmtSize(bytes) {
   while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
   return n.toFixed(1) + ' ' + units[i];
 }
-var backupsInHA = 0;
+var keepAutomaticInHA = 0;
+var keepAppInHA = 0;
 async function refresh() {
   try {
     var r = await fetch('api/status');
@@ -263,22 +272,29 @@ async function refresh() {
     createBtn.disabled = syncing || !s.connected;
     createBtn.textContent = syncing ? 'Working…' : 'Create backup';
 
-    backupsInHA = s.backupsInHA || 0;
-    var retentionOff = backupsInHA <= 0;
+    keepAutomaticInHA = (s.settings && s.settings.keepAutomaticInHA) || 0;
+    keepAppInHA = (s.settings && s.settings.keepAppInHA) || 0;
+    var retentionOff = keepAutomaticInHA <= 0 && keepAppInHA <= 0;
     var pruneBtn = document.getElementById('pruneHA');
     pruneBtn.disabled = syncing || retentionOff;
     document.getElementById('pruneHint').textContent = retentionOff
-      ? 'Local clean-up is off (backups_in_ha = 0). Set it to keep only the newest N in Home Assistant.'
-      : 'Deletes local HA backups beyond the newest ' + backupsInHA + ' — only ones already copied to Proton.';
+      ? 'Local clean-up is off (keep_automatic_in_ha and keep_app_in_ha are both 0). Set one to keep only the newest N in Home Assistant.'
+      : 'Deletes local HA backups beyond the newest ' + keepAutomaticInHA + ' automatic / ' + keepAppInHA + ' app — only ones already copied to Proton.';
 
     var statsCard = document.getElementById('statsCard');
     if (s.stats) {
       var st = s.stats;
+      var bucketLine = function(auto, app){
+        if (auto == null || app == null) return '';
+        return auto + ' automatic, ' + app + ' app';
+      };
+      var haBuckets = bucketLine(st.haAutomaticCount, st.haAppCount);
+      var protonBuckets = bucketLine(st.protonAutomaticCount, st.protonAppCount);
       statsCard.style.display = 'block';
       statsCard.innerHTML =
         '<h2 style="font-size:1.1rem;margin-top:0">Backup statistics</h2>' +
-        '<div class="row"><span>In Home Assistant</span><span>' + st.haCount + ' (' + fmtSize(st.haSizeBytes) + ')</span></div>' +
-        '<div class="row"><span>In Proton Drive</span><span>' + st.protonCount + ' (' + fmtSize(st.protonSizeBytes) + ')</span></div>' +
+        '<div class="row"><span>In Home Assistant</span><span>' + (haBuckets || st.haCount) + ' (' + fmtSize(st.haSizeBytes) + ')</span></div>' +
+        '<div class="row"><span>In Proton Drive</span><span>' + (protonBuckets || st.protonCount) + ' (' + fmtSize(st.protonSizeBytes) + ')</span></div>' +
         (st.hostDiskFreeBytes != null
           ? '<div class="row"><span>Host disk free</span><span>' + fmtSize(st.hostDiskFreeBytes) +
             (st.hostDiskTotalBytes ? ' / ' + fmtSize(st.hostDiskTotalBytes) : '') + '</span></div>'
@@ -287,6 +303,26 @@ async function refresh() {
         '<div class="row"><span>Next sync</span><span>' + next + '</span></div>';
     } else {
       statsCard.style.display = 'none';
+    }
+
+    var settingsCard = document.getElementById('settingsCard');
+    var cfg = s.settings;
+    if (cfg) {
+      var protonKeep = function(n){ return (n && n > 0) ? String(n) : 'all'; };
+      var haKeep = function(n){ return (n && n > 0) ? String(n) : 'off'; };
+      settingsCard.style.display = 'block';
+      settingsCard.innerHTML =
+        '<h2 style="font-size:1.1rem;margin-top:0">Settings</h2>' +
+        '<div class="row"><span>Drive folder</span><span>' + (cfg.driveFolder || '') + '</span></div>' +
+        '<div class="row"><span>Sync interval</span><span>' + (s.schedule || '') + '</span></div>' +
+        '<div class="row"><span>Keep automatic in Proton</span><span>' + protonKeep(cfg.keepAutomaticInProton) + '</span></div>' +
+        '<div class="row"><span>Keep app in Proton</span><span>' + protonKeep(cfg.keepAppInProton) + '</span></div>' +
+        '<div class="row"><span>Keep automatic in HA (manual cleanup)</span><span>' + haKeep(cfg.keepAutomaticInHA) + '</span></div>' +
+        '<div class="row"><span>Keep app in HA (manual cleanup)</span><span>' + haKeep(cfg.keepAppInHA) + '</span></div>' +
+        '<div class="row"><span>Backup password</span><span>' + (cfg.backupPasswordSet ? 'Set' : 'Not set') + '</span></div>' +
+        (cfg.stagingDir ? '<div class="row"><span>Staging dir</span><span>' + cfg.stagingDir + '</span></div>' : '');
+    } else {
+      settingsCard.style.display = 'none';
     }
 
     // Connect / Connected cards.
@@ -350,7 +386,7 @@ document.getElementById('createBackup').onclick = async function(){
   refresh();
 };
 document.getElementById('pruneHA').onclick = async function(){
-  if (!confirm('Delete local HA backups beyond the newest ' + backupsInHA + ' that are already copied to Proton?')) return;
+  if (!confirm('Delete local HA backups beyond the newest ' + keepAutomaticInHA + ' automatic / ' + keepAppInHA + ' app that are already copied to Proton?')) return;
   var btn = this; btn.disabled = true;
   try {
     var r = await fetch('api/prune-ha', { method: 'POST' });

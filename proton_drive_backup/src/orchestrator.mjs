@@ -8,11 +8,15 @@
  * FILENAME. Each HA backup is stored remotely as `<sanitizedName> (<slug>).tar`;
  * the `(slug)` suffix is the HA backup's stable, unique id, which drives dedup.
  *
- * Retention:
- *  - Proton side is enforced automatically each sync (`backups_in_proton`),
- *    sorting by the Proton entry's date (names are no longer time-sortable).
+ * Retention (split into two independent buckets — AUTOMATIC vs APP — so a burst
+ * of small per-add-on "app" backups can never evict the important scheduled
+ * "Automatic backup" ones; buckets are decided BY NAME via isAutomaticBackup):
+ *  - Proton side is enforced automatically each sync
+ *    (`keep_automatic_in_proton` / `keep_app_in_proton`), sorting each bucket by
+ *    the Proton entry's date (names are no longer time-sortable).
  *  - HA side is MANUAL ONLY (the "Clean up local backups" button →
- *    `pruneHALocalNow`) and NEVER deletes a backup that isn't confirmed offsite.
+ *    `pruneHALocalNow`, `keep_automatic_in_ha` / `keep_app_in_ha`) and NEVER
+ *    deletes a backup that isn't confirmed offsite.
  *
  * Authentication is owned entirely by the CLI (browser sign-in). This module
  * never handles credentials — it only reports a `needsLogin` flag when the CLI
@@ -71,10 +75,30 @@ function cfg() {
     return {
         driveFolder: process.env.DRIVE_FOLDER || 'Home Assistant Backups',
         intervalHours: parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0,
-        backupsInProton: parseInt(process.env.BACKUPS_IN_PROTON || '0', 10) || 0,
-        backupsInHA: parseInt(process.env.BACKUPS_IN_HA || '0', 10) || 0,
+        keepAutomaticInProton: parseInt(process.env.KEEP_AUTOMATIC_IN_PROTON || '0', 10) || 0,
+        keepAppInProton: parseInt(process.env.KEEP_APP_IN_PROTON || '0', 10) || 0,
+        keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
+        keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
         backupPassword: process.env.BACKUP_PASSWORD || undefined,
         dataDir: process.env.DATA_DIR || '/data',
+    };
+}
+
+/**
+ * Effective config for display in the Web UI. The backup password is NEVER
+ * exposed — only a boolean saying whether one is set.
+ */
+export function getConfig() {
+    const c = cfg();
+    return {
+        driveFolder: c.driveFolder,
+        intervalHours: c.intervalHours,
+        keepAutomaticInProton: c.keepAutomaticInProton,
+        keepAppInProton: c.keepAppInProton,
+        keepAutomaticInHA: c.keepAutomaticInHA,
+        keepAppInHA: c.keepAppInHA,
+        backupPasswordSet: !!c.backupPassword,
+        stagingDir: process.env.STAGING_DIR || null,
     };
 }
 
@@ -104,6 +128,19 @@ async function remoteFolder() {
 /** Any `.tar` in the configured folder is treated as a mirrored HA backup. */
 export function isOurRemoteFile(name) {
     return typeof name === 'string' && name.endsWith('.tar');
+}
+
+/**
+ * Classify a backup by NAME into the "automatic" bucket vs the "app" bucket.
+ * Home Assistant names its scheduled full backups "Automatic backup <version>";
+ * per-add-on and manual backups get other names. Works on BOTH an HA backup's
+ * `name` and a Proton remote filename (`<sanitizedName> (<slug>).tar`) — the
+ * ` (slug).tar` suffix can't affect a `^`-anchored prefix match, and
+ * sanitizeName preserves the leading "Automatic backup" text.
+ * @returns {boolean} true = automatic bucket; false = app bucket.
+ */
+export function isAutomaticBackup(name) {
+    return /^Automatic backup/i.test(String(name ?? ''));
 }
 
 /**
@@ -164,48 +201,65 @@ export function selectToUpload(haBackups, remoteEntries) {
 }
 
 /**
- * Which remote files to trash to satisfy Proton retention. Sort by DATE (newest
- * first, from the Proton entry) and return everything beyond `keep`. Any `.tar`
- * in the folder is treated as a mirrored backup.
+ * Which remote files to trash to satisfy Proton retention. Retention is split
+ * into two INDEPENDENT buckets by name (isAutomaticBackup): the automatic bucket
+ * keeps the newest `keepAutomatic`, the app bucket the newest `keepApp`. Within
+ * each bucket, sort by DATE (newest first, from the Proton entry) and return
+ * everything beyond that bucket's keep. keep<=0 for a bucket keeps ALL of it, so
+ * an app-backup burst can never evict the automatic backups. Any `.tar` in the
+ * folder is treated as a mirrored backup.
  * @param {Array<{name:string,date?:string}>} entries
- * @param {number} keep - 0/negative = keep everything.
- * @returns {string[]} remote filenames to trash.
+ * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = keep all.
+ * @param {number} keepApp - newest app backups to keep; <=0 = keep all.
+ * @returns {string[]} remote filenames to trash (from both buckets).
  */
-export function selectProtonToPrune(entries, keep) {
-    if (!keep || keep <= 0) return [];
-    const sorted = (entries || [])
-        .filter((e) => isOurRemoteFile(e.name))
-        .sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0)); // newest first
-    return sorted.slice(keep).map((e) => e.name);
+export function selectProtonToPrune(entries, keepAutomatic, keepApp) {
+    const ours = (entries || []).filter((e) => isOurRemoteFile(e.name));
+    const byDateDesc = (a, b) => new Date(b.date || 0) - new Date(a.date || 0); // newest first
+    const pruneBucket = (bucket, keep) => {
+        if (!keep || keep <= 0) return [];
+        return bucket.slice().sort(byDateDesc).slice(keep).map((e) => e.name);
+    };
+    const automatic = ours.filter((e) => isAutomaticBackup(e.name));
+    const app = ours.filter((e) => !isAutomaticBackup(e.name));
+    return [...pruneBucket(automatic, keepAutomatic), ...pruneBucket(app, keepApp)];
 }
 
 /**
- * Which local HA backups to delete to satisfy the manual HA retention limit.
+ * Which local HA backups to delete to satisfy the manual HA retention limits.
+ * Split into two INDEPENDENT buckets by name (isAutomaticBackup): keep the
+ * newest `keepAutomatic` automatic backups and the newest `keepApp` app backups;
+ * per bucket, candidates are the oldest ones beyond that keep (keep<=0 for a
+ * bucket = delete NONE of it).
  *
  * SAFETY: only ever returns slugs that are CONFIRMED present in Proton
- * (`protonSlugs`). A backup that has not been mirrored offsite is NEVER
- * returned, no matter how old — this function cannot select an un-mirrored
- * backup for deletion.
+ * (`protonSlugs`), in EITHER bucket. A backup that has not been mirrored offsite
+ * is NEVER returned, no matter how old — this function cannot select an
+ * un-mirrored backup for deletion.
  *
- * @param {Array<{slug:string,date?:string}>} haBackups
+ * @param {Array<{slug:string,name?:string,date?:string}>} haBackups
  * @param {Set<string>|string[]} protonSlugs - slugs confirmed present in Proton.
- * @param {number} keep - newest N to always keep; <=0 = delete nothing.
+ * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = delete none.
+ * @param {number} keepApp - newest app backups to keep; <=0 = delete none.
  * @returns {string[]} slugs to delete (all of which are in protonSlugs).
  */
-export function selectHALocalToPrune(haBackups, protonSlugs, keep) {
-    if (!keep || keep <= 0) return [];
+export function selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
     const inProton = protonSlugs instanceof Set ? protonSlugs : new Set(protonSlugs || []);
-    const sorted = (haBackups || [])
-        .filter((b) => b && b.slug)
-        .slice()
-        .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0)); // oldest first
-    const excess = sorted.length - keep;
-    if (excess <= 0) return [];
-    // Candidates are the oldest ones beyond the newest `keep`. Of those, delete
-    // ONLY the ones confirmed present in Proton.
-    return sorted.slice(0, excess)
-        .filter((b) => inProton.has(b.slug))
-        .map((b) => b.slug);
+    const ours = (haBackups || []).filter((b) => b && b.slug);
+    const byDateAsc = (a, b) => new Date(a.date || 0) - new Date(b.date || 0); // oldest first
+    const pruneBucket = (bucket, keep) => {
+        if (!keep || keep <= 0) return [];
+        const sorted = bucket.slice().sort(byDateAsc);
+        const excess = sorted.length - keep;
+        if (excess <= 0) return [];
+        // Oldest beyond the newest `keep`; of those delete ONLY ones in Proton.
+        return sorted.slice(0, excess)
+            .filter((b) => inProton.has(b.slug))
+            .map((b) => b.slug);
+    };
+    const automatic = ours.filter((b) => isAutomaticBackup(b.name));
+    const app = ours.filter((b) => !isAutomaticBackup(b.name));
+    return [...pruneBucket(automatic, keepAutomatic), ...pruneBucket(app, keepApp)];
 }
 
 export function setNextSyncEpoch(epoch) {
@@ -312,16 +366,16 @@ async function syncBackupsToProton() {
 }
 
 export async function pruneProton() {
-    const { backupsInProton } = cfg();
-    if (backupsInProton <= 0) {
-        console.debug('[orchestrator] pruneProton: retention disabled, skipping');
+    const { keepAutomaticInProton, keepAppInProton } = cfg();
+    if (keepAutomaticInProton <= 0 && keepAppInProton <= 0) {
+        console.debug('[orchestrator] pruneProton: retention disabled (both buckets keep all), skipping');
         return;
     }
 
     const folder = await remoteFolder();
     const entries = await cli.list(folder);
-    const toPrune = selectProtonToPrune(entries, backupsInProton);
-    console.debug(`[orchestrator] pruneProton: retention=${backupsInProton} to_prune=${toPrune.length}`);
+    const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton);
+    console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
     for (const name of toPrune) {
         try {
             console.log(`[orchestrator] Pruning Proton backup "${name}"`);
@@ -334,14 +388,15 @@ export async function pruneProton() {
 }
 
 /**
- * Manually delete local HA backups beyond the newest `backups_in_ha`, but ONLY
- * ones confirmed present in Proton (SAFETY: never delete an un-mirrored backup).
+ * Manually delete local HA backups beyond the newest keep-count PER BUCKET
+ * (`keep_automatic_in_ha` / `keep_app_in_ha`), but ONLY ones confirmed present
+ * in Proton (SAFETY: never delete an un-mirrored backup, in either bucket).
  * Never runs automatically. Returns { deleted, skippedNotInProton }.
  */
 export async function pruneHALocalNow() {
-    const { backupsInHA } = cfg();
-    if (backupsInHA <= 0) {
-        console.debug('[orchestrator] pruneHALocalNow: HA retention disabled (backups_in_ha=0)');
+    const { keepAutomaticInHA, keepAppInHA } = cfg();
+    if (keepAutomaticInHA <= 0 && keepAppInHA <= 0) {
+        console.debug('[orchestrator] pruneHALocalNow: HA retention disabled (both buckets 0)');
         return { deleted: 0, skippedNotInProton: 0 };
     }
 
@@ -352,18 +407,18 @@ export async function pruneHALocalNow() {
     ]);
     const protonSlugs = protonSlugSet(remoteEntries);
 
-    // Candidates = the oldest backups beyond the newest N (what retention wants
-    // gone). Of those, we only actually delete the ones mirrored in Proton.
-    const sorted = (haBackups || [])
-        .filter((b) => b && b.slug)
-        .slice()
-        .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
-    const excess = Math.max(0, sorted.length - backupsInHA);
-    const candidates = sorted.slice(0, excess);
-    const toDelete = selectHALocalToPrune(haBackups, protonSlugs, backupsInHA);
-    const skippedNotInProton = candidates.length - toDelete.length;
+    // Candidates per bucket = the oldest backups beyond that bucket's keep (what
+    // retention wants gone). Of those, we only actually delete ones in Proton;
+    // the difference is reported as "skipped, not yet in Proton".
+    const ours = (haBackups || []).filter((b) => b && b.slug);
+    const bucketExcess = (bucket, keep) => (!keep || keep <= 0 ? 0 : Math.max(0, bucket.length - keep));
+    const automatic = ours.filter((b) => isAutomaticBackup(b.name));
+    const app = ours.filter((b) => !isAutomaticBackup(b.name));
+    const candidateCount = bucketExcess(automatic, keepAutomaticInHA) + bucketExcess(app, keepAppInHA);
+    const toDelete = selectHALocalToPrune(haBackups, protonSlugs, keepAutomaticInHA, keepAppInHA);
+    const skippedNotInProton = candidateCount - toDelete.length;
 
-    console.debug(`[orchestrator] pruneHALocalNow: keep=${backupsInHA} total_ha=${sorted.length} candidates=${candidates.length} to_delete=${toDelete.length} skipped_not_in_proton=${skippedNotInProton}`);
+    console.debug(`[orchestrator] pruneHALocalNow: keep_automatic=${keepAutomaticInHA} keep_app=${keepAppInHA} total_ha=${ours.length} candidates=${candidateCount} to_delete=${toDelete.length} skipped_not_in_proton=${skippedNotInProton}`);
 
     let deleted = 0;
     for (const slug of toDelete) {

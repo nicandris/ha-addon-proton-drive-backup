@@ -1,5 +1,5 @@
 name: Proton Drive Backup
-version: "0.3.1"
+version: "0.4.0"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive
@@ -16,14 +16,18 @@ panel_title: Proton Backup
 options:
   drive_folder: Home Assistant Backups
   backup_interval_hours: 24
-  backups_in_proton: 10
-  backups_in_ha: 4
+  keep_automatic_in_proton: 10
+  keep_app_in_proton: 10
+  keep_automatic_in_ha: 0
+  keep_app_in_ha: 0
   backup_password: ""
   log_level: info
 schema:
   drive_folder: str
   backup_interval_hours: int(0,)
-  backups_in_proton: int(0,)
-  backups_in_ha: int(0,)
+  keep_automatic_in_proton: int(0,)
+  keep_app_in_proton: int(0,)
+  keep_automatic_in_ha: int(0,)
+  keep_app_in_ha: int(0,)
   backup_password: password?
   log_level: list(trace|debug|info|notice|warning|error|fatal)
