@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.3
+
+- **Live status indicator in the Web UI.** The status card now shows a
+  connection badge plus a live sync state — an animated **Syncing…** badge with
+  the current step (e.g. *"Uploading 2 of 3: &lt;name&gt;"*) and a progress bar,
+  so the long multi-minute uploads no longer look frozen. "Back up now" shows
+  "Syncing…" and is disabled while a sync runs. Idle shows a plain badge.
+
 ## 0.2.2
 
 - **Stage backup downloads outside `/data`.** Temp `.tar` files were staged in
