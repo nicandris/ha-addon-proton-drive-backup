@@ -75,15 +75,73 @@ async function remoteFolder() {
 }
 
 /** Our remote files: `<name>.tar` where name starts with the add-on prefix. */
-function isOurRemoteFile(name) {
+export function isOurRemoteFile(name) {
     return name.startsWith(ADDON_BACKUP_PREFIX) && name.endsWith('.tar');
 }
 
+/** Is this HA backup one this add-on created? */
+export function isOurHABackup(b) {
+    return (b?.name || '').startsWith(ADDON_BACKUP_PREFIX);
+}
+
+/** The remote filename for an HA backup (`<name>.tar`). */
+export function remoteNameFor(backup) {
+    return `${backup.name}.tar`;
+}
+
 /** Derive an ISO date string from `Proton Drive Backup <ISO>.tar` (best effort). */
-function dateFromRemoteName(name) {
+export function dateFromRemoteName(name) {
     const stamp = name.slice(ADDON_BACKUP_PREFIX.length, -'.tar'.length).trim();
     const d = new Date(stamp);
     return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// --- Pure decision logic (no I/O) — unit-tested in test/orchestrator.test.mjs ---
+
+/**
+ * Which of our HA backups are not yet in Proton? Dedup by remote filename.
+ * @param {Array<{slug:string,name:string}>} haBackups
+ * @param {Array<{name:string}>} remoteEntries
+ * @returns {Array<{slug:string, name:string, remoteName:string}>}
+ */
+export function selectToUpload(haBackups, remoteEntries) {
+    const present = new Set((remoteEntries || []).map((e) => e.name));
+    return (haBackups || [])
+        .filter(isOurHABackup)
+        .map((b) => ({ slug: b.slug, name: b.name, remoteName: remoteNameFor(b) }))
+        .filter((x) => !present.has(x.remoteName));
+}
+
+/**
+ * Which remote files to trash to satisfy retention. Our files only, oldest
+ * first (name embeds an ISO timestamp so a lexical sort is chronological).
+ * @param {Array<{name:string}>} entries
+ * @param {number} keep - 0/negative = keep everything.
+ * @returns {string[]} remote filenames to trash.
+ */
+export function selectProtonToPrune(entries, keep) {
+    if (!keep || keep <= 0) return [];
+    const ours = (entries || [])
+        .filter((e) => isOurRemoteFile(e.name))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    const excess = ours.length - keep;
+    return excess > 0 ? ours.slice(0, excess).map((e) => e.name) : [];
+}
+
+/**
+ * Which HA backups to delete to satisfy retention. Our backups only, oldest
+ * first by date.
+ * @param {Array<{slug:string,name:string,date?:string}>} haBackups
+ * @param {number} keep - 0/negative = keep everything.
+ * @returns {string[]} slugs to delete.
+ */
+export function selectHAToPrune(haBackups, keep) {
+    if (!keep || keep <= 0) return [];
+    const ours = (haBackups || [])
+        .filter(isOurHABackup)
+        .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
+    const excess = ours.length - keep;
+    return excess > 0 ? ours.slice(0, excess).map((b) => b.slug) : [];
 }
 
 export function setNextSyncEpoch(epoch) {
@@ -143,37 +201,30 @@ async function syncBackupsToProton() {
         cli.list(folder),
     ]);
 
-    // Only ever consider backups this add-on created.
-    const ours = haBackups.filter((b) => (b.name || '').startsWith(ADDON_BACKUP_PREFIX));
-    const presentNames = new Set(remoteEntries.map((e) => e.name));
-    console.debug(`[orchestrator] HA (ours): ${ours.length}, Proton files: ${remoteEntries.length}`);
-    console.debug(`[orchestrator] Present remotely: ${[...presentNames].filter(isOurRemoteFile).join(', ') || '(none)'}`);
+    // Dedup by remote filename — only backups this add-on created, not yet in Proton.
+    const toUpload = selectToUpload(haBackups, remoteEntries);
+    console.debug(`[orchestrator] HA files: ${haBackups.length}, Proton files: ${remoteEntries.length}, to upload: ${toUpload.length}`);
 
     await mkdir(tmpDir(), { recursive: true });
 
     let uploaded = 0;
     let errors = 0;
-    for (const ha of ours) {
-        const remoteName = `${ha.name}.tar`;
-        if (presentNames.has(remoteName)) {
-            console.debug(`[orchestrator] Skipping "${remoteName}" — already in Proton`);
-            continue;
-        }
+    for (const item of toUpload) {
         // Stage the local file under its final remote name so the CLI upload
         // (which derives the remote name from the local basename) produces
         // `<name>.tar` remotely.
-        const tmpPath = join(tmpDir(), remoteName);
+        const tmpPath = join(tmpDir(), item.remoteName);
         try {
-            console.log(`[orchestrator] Uploading HA backup ${ha.slug} ("${ha.name}") to Proton`);
+            console.log(`[orchestrator] Uploading HA backup ${item.slug} ("${item.name}") to Proton`);
             console.debug(`[orchestrator] Downloading from Supervisor → ${tmpPath}`);
-            await supervisor.downloadBackup(ha.slug, tmpPath);
-            console.debug(`[orchestrator] Uploading "${remoteName}" to Drive folder "${folder}"...`);
+            await supervisor.downloadBackup(item.slug, tmpPath);
+            console.debug(`[orchestrator] Uploading "${item.remoteName}" to Drive folder "${folder}"...`);
             await cli.uploadFile(tmpPath, folder, { conflictStrategy: 'replace' });
             uploaded++;
-            console.debug(`[orchestrator] Upload of "${remoteName}" complete`);
+            console.debug(`[orchestrator] Upload of "${item.remoteName}" complete`);
         } catch (err) {
             errors++;
-            state.lastError = `Upload of ${ha.slug} failed: ${describeError(err)}`;
+            state.lastError = `Upload of ${item.slug} failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
         } finally {
             await rm(tmpPath, { force: true }).catch(() => {});
@@ -191,16 +242,12 @@ export async function pruneProton() {
 
     const folder = await remoteFolder();
     const entries = await cli.list(folder);
-    // Our files only; name is `Proton Drive Backup <ISO>.tar` so a lexical sort
-    // by name is chronological — oldest first.
-    const ours = entries.filter((e) => isOurRemoteFile(e.name)).sort((a, b) => a.name.localeCompare(b.name));
-    const excess = ours.length - backupsInProton;
-    console.debug(`[orchestrator] pruneProton: retention=${backupsInProton} current=${ours.length} to_prune=${Math.max(0, excess)}`);
-    for (let i = 0; i < excess; i++) {
-        const e = ours[i];
+    const toPrune = selectProtonToPrune(entries, backupsInProton);
+    console.debug(`[orchestrator] pruneProton: retention=${backupsInProton} to_prune=${toPrune.length}`);
+    for (const name of toPrune) {
         try {
-            console.log(`[orchestrator] Pruning Proton backup "${e.name}"`);
-            await cli.trash(`${folder}/${e.name}`);
+            console.log(`[orchestrator] Pruning Proton backup "${name}"`);
+            await cli.trash(`${folder}/${name}`);
         } catch (err) {
             state.lastError = `Proton prune failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
@@ -216,16 +263,12 @@ export async function pruneHA() {
     }
 
     const haBackups = await supervisor.listBackups();
-    // Only ever touch backups this add-on created.
-    const ours = haBackups.filter((b) => (b.name || '').startsWith(ADDON_BACKUP_PREFIX));
-    const sorted = ours.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
-    const excess = sorted.length - backupsInHA;
-    console.debug(`[orchestrator] pruneHA: retention=${backupsInHA} ours=${ours.length} total_ha=${haBackups.length} to_prune=${Math.max(0, excess)}`);
-    for (let i = 0; i < excess; i++) {
-        const b = sorted[i];
+    const toPrune = selectHAToPrune(haBackups, backupsInHA);
+    console.debug(`[orchestrator] pruneHA: retention=${backupsInHA} total_ha=${haBackups.length} to_prune=${toPrune.length}`);
+    for (const slug of toPrune) {
         try {
-            console.log(`[orchestrator] Pruning HA backup ${b.slug} (${b.name})`);
-            await supervisor.deleteBackup(b.slug);
+            console.log(`[orchestrator] Pruning HA backup ${slug}`);
+            await supervisor.deleteBackup(slug);
         } catch (err) {
             state.lastError = `HA prune failed: ${describeError(err)}`;
             console.error(`[orchestrator] ${state.lastError}`);
