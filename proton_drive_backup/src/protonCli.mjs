@@ -11,8 +11,9 @@
  * failures — only exit code + stderr text.
  *
  * run() NEVER rejects on a nonzero exit: it resolves with {code, stdout, stderr}
- * so callers decide what an error means. The environment (credentials store +
- * XDG_DATA_HOME, set by run.sh) is always inherited.
+ * so callers decide what an error means. The child gets a FILTERED environment
+ * (only what the CLI needs) — never the add-on's full env, which carries
+ * BACKUP_PASSWORD and SUPERVISOR_TOKEN.
  */
 
 import { spawn } from 'node:child_process';
@@ -22,6 +23,27 @@ const BIN = process.env.PROTON_DRIVE_BIN || 'proton-drive';
 
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
+
+/** Env names passed through verbatim to the CLI (plus the PROTON_DRIVE_* set). */
+const ENV_ALLOW = ['PATH', 'HOME', 'TMPDIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'];
+
+/**
+ * The environment handed to the third-party binary: the CLI's own settings
+ * (`PROTON_DRIVE_*`, incl. the credentials store) plus the few generic vars it
+ * needs. Everything else is withheld — the add-on's env contains the HA backup
+ * password and the Supervisor token, which the CLI has no business seeing.
+ * (`FAKE_*` is forwarded so the test fixture binary can be driven by env.)
+ */
+function childEnv() {
+    const env = {};
+    for (const name of ENV_ALLOW) {
+        if (process.env[name] !== undefined) env[name] = process.env[name];
+    }
+    for (const [k, v] of Object.entries(process.env)) {
+        if (k.startsWith('PROTON_DRIVE_') || k.startsWith('FAKE_')) env[k] = v;
+    }
+    return env;
+}
 
 /**
  * Run the CLI with the given argv. Never rejects on a nonzero exit code.
@@ -36,7 +58,7 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
         console.debug(`[protonCli] run: ${BIN} ${args.join(' ')}`);
         const child = spawn(BIN, args, {
             cwd,
-            env: process.env, // carries the store + XDG_DATA_HOME from run.sh
+            env: childEnv(), // filtered: CLI settings only, no add-on secrets
         });
 
         let stdout = '';
@@ -90,7 +112,7 @@ export async function isConnected() {
 export function login({ onUrl, timeoutMs = 300000 } = {}) {
     return new Promise((resolve) => {
         console.debug('[protonCli] login: spawning auth login');
-        const child = spawn(BIN, ['auth', 'login'], { env: process.env });
+        const child = spawn(BIN, ['auth', 'login'], { env: childEnv() });
 
         let stdout = '';
         let stderr = '';
@@ -149,10 +171,20 @@ export function logout() {
     return run(['auth', 'logout']);
 }
 
-/** Does this nonzero result look like an "already exists"/conflict, not a real error? */
+/**
+ * Does this nonzero result look like an "already exists"/conflict (which
+ * create-folder treats as success), rather than a real error?
+ *
+ * Deliberately narrow: a bare /exist/ match also matched "does not exist" and
+ * "no such file", turning a genuine failure into a silent success (fixed 0.4.1).
+ */
 function isExistsConflict(res) {
     const t = `${res.stdout} ${res.stderr}`.toLowerCase();
-    return /exist|conflict|already/.test(t);
+    // A negated existence phrase ("does not exist", "no such folder") is never a
+    // conflict — it means the opposite, so it must stay a hard error.
+    if (/\b(?:not|no|never|cannot|can't|couldn't|unable|non-?existent|missing)\b[^.\n]{0,24}exist/.test(t)) return false;
+    if (/\b(?:no such|not found|nonexistent)\b/.test(t)) return false;
+    return /\balready (?:exist|present|there)|\bfile exists\b|\bduplicate\b|\bconflict/.test(t);
 }
 
 /**
@@ -187,71 +219,98 @@ export async function ensureFolder(remotePath) {
 /**
  * List the direct children of a remote folder.
  *
- * NOTE: JSON shape unverified against a live account — validate on first real
- * login. We parse defensively: JSON.parse and tolerate either a bare array or
- * an object with a nested array; on ANY parse failure we log and return [].
+ * Two failure modes, chosen by the caller (0.4.1):
+ *  - LENIENT (default) — a nonzero exit or unparseable output resolves to `[]`.
+ *    Only safe for display (`listProtonBackups`), where "nothing to show" is a
+ *    harmless outcome.
+ *  - STRICT (`{strict:true}` / `listStrict`) — THROWS instead. The sync path
+ *    must use this: a false-empty listing looks like "nothing is mirrored", which
+ *    made the orchestrator re-upload every backup with `-c replace` (tens of GB)
+ *    and reset every Proton `modificationTime`, destroying retention ordering.
+ *
+ * The shape below is the CLI's real `filesystem list -j` schema (locked in
+ * 0.2.4); the extra tolerance is kept because the CLI is early.
  *
  * @param {string} remotePath
+ * @param {{strict?:boolean}} [opts]
  * @returns {Promise<Array<{name:string, type?:string, uid?:string, size?:number, date?:string}>>}
  */
-export async function list(remotePath) {
+export async function list(remotePath, { strict = false } = {}) {
+    const fail = (why) => {
+        if (strict) throw new Error(`list "${remotePath}" failed: ${why}`);
+        console.warn(`[protonCli] list "${remotePath}": ${why} — returning []`);
+        return [];
+    };
     const res = await run(['filesystem', 'list', remotePath, '-j']);
     if (res.code !== 0) {
-        console.debug(`[protonCli] list "${remotePath}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
-        return [];
+        return fail(`exit ${res.code}: ${res.stderr.trim() || res.stdout.trim() || 'no output'}`);
     }
-    // Log the raw JSON (truncated) so the real shape can be verified/locked down.
-    console.debug(`[protonCli] list "${remotePath}" raw: ${res.stdout.slice(0, 600).replace(/\s+/g, ' ')}`);
+    let parsed;
     try {
-        const parsed = JSON.parse(res.stdout);
-        // Tolerate: [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
-        let arr = null;
-        if (Array.isArray(parsed)) {
-            arr = parsed;
-        } else if (parsed && typeof parsed === 'object') {
-            arr = parsed.items || parsed.entries || parsed.data || parsed.children ||
-                Object.values(parsed).find((v) => Array.isArray(v)) || null;
-        }
-        if (!Array.isArray(arr)) {
-            console.warn(`[protonCli] list "${remotePath}": JSON had no recognisable array — returning []`);
-            return [];
-        }
-        return arr.map((e) => {
-            if (typeof e === 'string') return { name: e };
-            // Proton's CLI serialises `name` as a Result object
-            // ({ ok: true, value: "<filename>" }) — NOT a plain string. Extract
-            // the value; also tolerate a plain string / differently-cased key.
-            const n = e?.name;
-            let name = '';
-            if (typeof n === 'string') name = n;
-            else if (n && typeof n === 'object' && n.ok && typeof n.value === 'string') name = n.value;
-            else if (typeof (e?.Name ?? e?.fileName) === 'string') name = e.Name ?? e.fileName;
-            // Size lives on activeRevision (itself a Result), absent for folders.
-            const rev = e?.activeRevision;
-            const flatSize = e?.size ?? e?.Size;
-            const size = (rev && rev.ok && rev.value && typeof rev.value.claimedSize === 'number')
-                ? rev.value.claimedSize
-                : (typeof flatSize === 'number' ? flatSize : undefined);
-            // Timestamps come through as plain ISO strings (not Result-wrapped).
-            // Retention now sorts by date, so surface it: prefer modificationTime,
-            // else creationTime.
-            const modTime = e?.modificationTime ?? e?.ModificationTime;
-            const createTime = e?.creationTime ?? e?.CreationTime;
-            const date = (typeof modTime === 'string' && modTime)
-                ? modTime
-                : (typeof createTime === 'string' && createTime ? createTime : undefined);
-            return {
-                name,
-                type: e?.type ?? e?.Type,
-                uid: e?.uid ?? e?.id,
-                size,
-                date,
-            };
-        }).filter((e) => e.name);
+        parsed = JSON.parse(res.stdout);
     } catch (err) {
-        console.warn(`[protonCli] list "${remotePath}": JSON parse failed (${err.message}) — returning []`);
-        return [];
+        return fail(`JSON parse failed (${err.message})`);
     }
+    // Tolerate: [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
+    let arr = null;
+    if (Array.isArray(parsed)) {
+        arr = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+        arr = parsed.items || parsed.entries || parsed.data || parsed.children ||
+            Object.values(parsed).find((v) => Array.isArray(v)) || null;
+    }
+    if (!Array.isArray(arr)) {
+        return fail('JSON had no recognisable array');
+    }
+    const entries = arr.map((e) => {
+        if (typeof e === 'string') return { name: e };
+        // Proton's CLI serialises `name` as a Result object
+        // ({ ok: true, value: "<filename>" }) — NOT a plain string. Extract
+        // the value; also tolerate a plain string / differently-cased key.
+        const n = e?.name;
+        let name = '';
+        if (typeof n === 'string') name = n;
+        else if (n && typeof n === 'object' && n.ok && typeof n.value === 'string') name = n.value;
+        else if (typeof (e?.Name ?? e?.fileName) === 'string') name = e.Name ?? e.fileName;
+        // Size lives on activeRevision (itself a Result), absent for folders.
+        const rev = e?.activeRevision;
+        const flatSize = e?.size ?? e?.Size;
+        const size = (rev && rev.ok && rev.value && typeof rev.value.claimedSize === 'number')
+            ? rev.value.claimedSize
+            : (typeof flatSize === 'number' ? flatSize : undefined);
+        // Timestamps come through as plain ISO strings (not Result-wrapped).
+        // Retention now sorts by date, so surface it: prefer modificationTime,
+        // else creationTime.
+        const modTime = e?.modificationTime ?? e?.ModificationTime;
+        const createTime = e?.creationTime ?? e?.CreationTime;
+        const date = (typeof modTime === 'string' && modTime)
+            ? modTime
+            : (typeof createTime === 'string' && createTime ? createTime : undefined);
+        return {
+            name,
+            type: e?.type ?? e?.Type,
+            uid: e?.uid ?? e?.id,
+            size,
+            date,
+        };
+    }).filter((e) => e.name);
+
+    // Log only the MAPPED fields. The raw NodeEntity payload was logged before
+    // 0.4.1 — it carries node ids, revision ids and hashes, and add-on logs get
+    // pasted into public issues.
+    console.debug(`[protonCli] list "${remotePath}": ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`
+        + (entries.length ? ` — ${entries.map((e) => `${e.name}${e.size != null ? ` (${e.size}B)` : ''}`).join(', ')}` : ''));
+    return entries;
+}
+
+/**
+ * Strict `list`: THROWS on a nonzero exit or unparseable output instead of
+ * resolving to `[]`. Use this everywhere a false-empty listing would be acted
+ * on (sync, retention) — see the note on `list`.
+ * @param {string} remotePath
+ */
+export function listStrict(remotePath) {
+    return list(remotePath, { strict: true });
 }
 
 /**
