@@ -60,8 +60,28 @@ test('the page declares Home Assistant\'s palette under HA\'s own variable names
 
 test('page rules use the palette variables, not hardcoded colours', () => {
     // Strip comments and the :root/dark blocks, where literals belong.
-    let rules = css.replace(/\/\*[\s\S]*?\*\//g, '');
-    rules = rules.replace(/:root \{[\s\S]*?\n  \}/g, '');
+    // Everything between palette:start/palette:end is where literals belong.
+    let rules = css.replace(/\/\* palette:start[\s\S]*?palette:end \*\//, '');
+    rules = rules.replace(/\/\*[\s\S]*?\*\//g, '');
     const hex = rules.match(/#[0-9a-fA-F]{3,6}\b/g) || [];
     assert.deepEqual(hex, [], `hardcoded colours outside :root: ${hex.join(", ")}`);
+});
+
+test('an appearance selector offers Auto / Light / Dark and persists the choice', () => {
+    assert.match(scripts[0], /id="themeSel"/);
+    for (const v of ['auto', 'light', 'dark']) assert.ok(scripts[0].includes(`'${v}'`), `missing ${v} option`);
+    assert.match(scripts[0], /localStorage\.setItem\(THEME_KEY/, 'choice is not persisted');
+    // Applied before the first render, so there is no flash of the wrong theme.
+    assert.match(scripts[0], /applyTheme\(currentTheme\(\)\);/);
+});
+
+test('forcing a theme overrides the prefers-color-scheme default in both directions', () => {
+    // Dark forced explicitly...
+    assert.match(css, /:root\[data-theme="dark"\] \{/);
+    // ...and Light must beat the dark media query, or "Light" would do nothing on
+    // a dark OS.
+    assert.match(css, /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\)/);
+    // The dark values come from one constant, so the two blocks can't drift.
+    const darkBlocks = css.match(/--card-background-color: #1c1c1c/g) || [];
+    assert.equal(darkBlocks.length, 2, 'expected the dark palette in exactly the two override blocks');
 });

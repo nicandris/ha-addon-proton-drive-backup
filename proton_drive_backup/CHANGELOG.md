@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.6
+
+- **Appearance selector: Auto / Light / Dark.** The panel followed your browser's
+  light/dark setting with no way to override it. There is now an **Appearance**
+  selector in the status card: *Auto* keeps matching Home Assistant, or you can
+  force Light or Dark. The choice is remembered per browser and applied before the
+  first paint, so there's no flash of the wrong theme. (Forcing Light correctly
+  wins over a dark OS setting.)
+
 ## 0.4.5
 
 ### Changed
