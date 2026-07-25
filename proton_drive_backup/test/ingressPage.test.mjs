@@ -85,3 +85,15 @@ test('forcing a theme overrides the prefers-color-scheme default in both directi
     const darkBlocks = css.match(/--card-background-color: #1c1c1c/g) || [];
     assert.equal(darkBlocks.length, 2, 'expected the dark palette in exactly the two override blocks');
 });
+
+test('the page shows progress while the first status is still unknown', () => {
+    // The server answers instantly with pending:true (stale-while-revalidate), so
+    // the page must render a spinner rather than guessing "disconnected" or
+    // sitting on a bare "Loading…".
+    assert.match(scripts[0], /s\.pending/, 'page ignores the pending flag');
+    assert.match(scripts[0], /badge-idle"><span class="spinner"><\/span>/, 'no spinner on the status badge');
+    // And it must not flash the Connect card at an already-connected user.
+    assert.match(scripts[0], /!s\.connected && !s\.pending/);
+    // Poll fast while pending so the fill-in feels immediate.
+    assert.match(scripts[0], /s\.pending \? 1200/);
+});
