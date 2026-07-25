@@ -54,9 +54,22 @@ const state = {
     lastError: null, // string
     nextSyncEpoch: null, // ms epoch of next scheduled sync
     needsLogin: false, // true when the CLI has no usable session
+    errors: [], // recent { at, message } — full history, not just the last
     activity: null, // human-readable current step while syncing (null = idle)
     progress: null, // { index, total } during multi-item uploads, else null
 };
+
+const MAX_ERRORS = 20;
+
+/**
+ * Record an error for the UI. Keeps a short history — a sync with three failed
+ * uploads used to leave only the last message visible.
+ */
+function recordError(message) {
+    state.lastError = message;
+    state.errors.push({ at: new Date().toISOString(), message });
+    if (state.errors.length > MAX_ERRORS) state.errors.splice(0, state.errors.length - MAX_ERRORS);
+}
 
 /** Update the live activity/progress shown in the UI while a sync runs. */
 function setActivity(activity, progress = null) {
@@ -84,6 +97,7 @@ function cfg() {
         keepAppInProton: parseInt(process.env.KEEP_APP_IN_PROTON || '0', 10) || 0,
         keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
         keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
+        automaticNamePrefix: process.env.AUTOMATIC_NAME_PREFIX || 'Automatic backup',
         backupPassword: process.env.BACKUP_PASSWORD || undefined,
         stagingDir: process.env.STAGING_DIR || null,
     };
@@ -102,6 +116,7 @@ export function getConfig() {
         keepAppInProton: c.keepAppInProton,
         keepAutomaticInHA: c.keepAutomaticInHA,
         keepAppInHA: c.keepAppInHA,
+        automaticNamePrefix: c.automaticNamePrefix,
         backupPasswordSet: !!c.backupPassword,
         stagingDir: c.stagingDir,
     };
@@ -119,6 +134,7 @@ const EDITABLE_SETTINGS = {
     keepAppInProton: { option: 'keep_app_in_proton', env: 'KEEP_APP_IN_PROTON', type: 'int' },
     keepAutomaticInHA: { option: 'keep_automatic_in_ha', env: 'KEEP_AUTOMATIC_IN_HA', type: 'int' },
     keepAppInHA: { option: 'keep_app_in_ha', env: 'KEEP_APP_IN_HA', type: 'int' },
+    automaticNamePrefix: { option: 'automatic_name_prefix', env: 'AUTOMATIC_NAME_PREFIX', type: 'string' },
 };
 
 /**
@@ -331,8 +347,10 @@ export function isOurRemoteFile(name) {
  * sanitizeName preserves the leading "Automatic backup" text.
  * @returns {boolean} true = automatic bucket; false = app bucket.
  */
-export function isAutomaticBackup(name) {
-    return /^Automatic backup/i.test(String(name ?? ''));
+export function isAutomaticBackup(name, prefix) {
+    const p = (prefix ?? process.env.AUTOMATIC_NAME_PREFIX ?? 'Automatic backup').trim();
+    if (!p) return false;
+    return String(name ?? '').trim().toLowerCase().startsWith(p.toLowerCase());
 }
 
 /**
@@ -491,14 +509,58 @@ export function selectToUpload(haBackups, remoteEntries, opts) {
  */
 export function selectProtonToPrune(entries, keepAutomatic, keepApp) {
     const ours = (entries || []).filter((e) => isOurRemoteFile(e.name));
-    const byDateDesc = (a, b) => new Date(b.date || 0) - new Date(a.date || 0); // newest first
+    const ts = (e) => {
+        const t = new Date(e?.date ?? NaN).getTime();
+        return Number.isNaN(t) ? null : t;
+    };
     const pruneBucket = (bucket, keep) => {
         if (!keep || keep <= 0) return [];
-        return bucket.slice().sort(byDateDesc).slice(keep).map((e) => e.name);
+        // Entries whose date we could not establish are NEVER pruned — we cannot
+        // say which is newest, and guessing means deleting the wrong backup. They
+        // still occupy keep slots, so retention stays roughly honest.
+        const dated = bucket.filter((e) => ts(e) !== null);
+        const undated = bucket.length - dated.length;
+        if (undated > 0) {
+            console.warn(`[orchestrator] ${undated} Proton backup(s) have no usable date — keeping them (cannot order safely)`);
+        }
+        const budget = Math.max(0, keep - undated);
+        return dated
+            .slice()
+            .sort((a, b) => ts(b) - ts(a)) // newest first
+            .slice(budget)
+            .map((e) => e.name);
     };
     const automatic = ours.filter((e) => isAutomaticBackup(e.name));
     const app = ours.filter((e) => !isAutomaticBackup(e.name));
     return [...pruneBucket(automatic, keepAutomatic), ...pruneBucket(app, keepApp)];
+}
+
+/**
+ * Fill in each Proton entry's date from the matching Home Assistant backup, which
+ * is authoritative — the CLI sometimes omits `modificationTime`/`creationTime`,
+ * and an upload with `-c replace` rewrites the remote timestamp anyway. Falls back
+ * to the Proton-reported date. Pure.
+ *
+ * @param {Array<{name:string,date?:string}>} entries
+ * @param {Array<{slug:string,date?:string}>} haBackups
+ */
+export function withResolvedDates(entries, haBackups) {
+    const bySlug = new Map((haBackups || []).filter((b) => b?.slug).map((b) => [b.slug, b.date]));
+    return (entries || []).map((e) => {
+        const haDate = bySlug.get(slugFromRemoteName(e?.name));
+        return haDate ? { ...e, date: haDate } : e;
+    });
+}
+
+/**
+ * Split HA backups into the two retention buckets and report the counts, so a
+ * misconfigured `automatic_name_prefix` (e.g. a non-English Home Assistant) is
+ * visible instead of silently dumping every scheduled backup into the app bucket.
+ */
+export function bucketCounts(haBackups) {
+    const ours = (haBackups || []).filter((b) => b && b.slug);
+    const automatic = ours.filter((b) => isAutomaticBackup(b.name)).length;
+    return { automatic, app: ours.length - automatic, total: ours.length };
 }
 
 /**
@@ -522,27 +584,39 @@ export function selectProtonToPrune(entries, keepAutomatic, keepApp) {
  * @returns {string[]} slugs to delete (all of which are in protonSlugs).
  */
 export function selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
-    const inProton = protonSlugs instanceof Set ? protonSlugs : new Set(protonSlugs || []);
-    const ours = (haBackups || []).filter((b) => b && b.slug);
-    const byDateAsc = (a, b) => new Date(a.date || 0) - new Date(b.date || 0); // oldest first
-    const pruneBucket = (bucket, keep) => {
-        if (!keep || keep <= 0) return [];
-        const sorted = bucket.slice().sort(byDateAsc);
-        const excess = sorted.length - keep;
-        if (excess <= 0) return [];
-        // Oldest beyond the newest `keep`; of those delete ONLY ones in Proton.
-        return sorted.slice(0, excess)
-            .filter((b) => inProton.has(b.slug))
-            .map((b) => b.slug);
-    };
-    const automatic = ours.filter((b) => isAutomaticBackup(b.name));
-    const app = ours.filter((b) => !isAutomaticBackup(b.name));
-    return [...pruneBucket(automatic, keepAutomatic), ...pruneBucket(app, keepApp)];
+    return planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp).toDelete;
 }
 
 /** Clear the last error shown in the UI. */
 export function clearError() {
     state.lastError = null;
+    state.errors = [];
+}
+
+/**
+ * Plan the manual HA clean-up: which backups retention wants gone (`candidates`),
+ * which of those are safe to delete because they're confirmed in Proton
+ * (`toDelete`), and how many were held back (`skippedNotInProton`).
+ *
+ * Single source of truth for the classification/ordering — `selectHALocalToPrune`
+ * delegates here, so the runner's reported numbers can't drift from the decision.
+ * SAFETY: `toDelete` is always a subset of `candidates` filtered by `protonSlugs`.
+ */
+export function planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
+    const inProton = protonSlugs instanceof Set ? protonSlugs : new Set(protonSlugs || []);
+    const ours = (haBackups || []).filter((b) => b && b.slug);
+    const byDateAsc = (a, b) => new Date(a.date || 0) - new Date(b.date || 0); // oldest first
+    const excess = (bucket, keep) => {
+        if (!keep || keep <= 0) return [];
+        const sorted = bucket.slice().sort(byDateAsc);
+        const n = sorted.length - keep;
+        return n > 0 ? sorted.slice(0, n) : [];
+    };
+    const automatic = ours.filter((b) => isAutomaticBackup(b.name));
+    const app = ours.filter((b) => !isAutomaticBackup(b.name));
+    const candidates = [...excess(automatic, keepAutomatic), ...excess(app, keepApp)];
+    const toDelete = candidates.filter((b) => inProton.has(b.slug)).map((b) => b.slug);
+    return { candidates, toDelete, skippedNotInProton: candidates.length - toDelete.length };
 }
 
 export function setNextSyncEpoch(epoch) {
@@ -555,6 +629,7 @@ export function getStatus() {
         lastError: state.lastError,
         nextSyncEpoch: state.nextSyncEpoch,
         needsLogin: state.needsLogin,
+        errors: state.errors.slice(),
         syncing,
         activity: state.activity,
         progress: state.progress,
@@ -616,6 +691,12 @@ async function syncBackupsToProton() {
     // Dedup by HA slug + size — every HA backup (automatic + manual) that isn't
     // verifiably mirrored in Proton.
     const toUpload = selectToUpload(haBackups, remoteEntries);
+    const buckets = bucketCounts(haBackups);
+    if (buckets.total > 0 && buckets.automatic === 0) {
+        console.warn(`[orchestrator] None of the ${buckets.total} Home Assistant backups match the automatic prefix `
+            + `"${process.env.AUTOMATIC_NAME_PREFIX || 'Automatic backup'}" — they are all being treated as "app" `
+            + 'backups, so keep_automatic_* does nothing. Set automatic_name_prefix to match your backup names.');
+    }
     console.debug(`[orchestrator] HA backups: ${haBackups.length}, Proton files: ${remoteEntries.length}, to upload: ${toUpload.length}`);
 
     await mkdir(tmpDir(), { recursive: true });
@@ -636,8 +717,7 @@ async function syncBackupsToProton() {
                 const free = await freeSpaceBytes(tmpDir());
                 if (free != null && free < item.sizeBytes) {
                     skipped++;
-                    state.lastError = `Not enough space to stage ${item.slug} ("${item.name}"): needs ${fmtBytes(item.sizeBytes)}, only ${fmtBytes(free)} free in ${tmpDir()}.`;
-                    console.error(`[orchestrator] ${state.lastError}`);
+                    recordError(`Not enough space to stage ${item.slug} ("${item.name}"): needs ${fmtBytes(item.sizeBytes)}, only ${fmtBytes(free)} free in ${tmpDir()}.`);
                     continue;
                 }
             }
@@ -657,8 +737,7 @@ async function syncBackupsToProton() {
                 console.warn(`[orchestrator] Skipping ${item.slug} ("${item.name}") — HA no longer serves this backup (404); likely a stale/removed entry, delete it in HA to silence this.`);
             } else {
                 errors++;
-                state.lastError = `Upload of ${item.slug} failed: ${describeError(err)}`;
-                console.error(`[orchestrator] ${state.lastError}`);
+                recordError(`Upload of ${item.slug} failed: ${describeError(err)}`);
             }
         } finally {
             await rm(tmpPath, { force: true }).catch(() => {});
@@ -677,7 +756,11 @@ export async function pruneProton() {
     const folder = await remoteFolder();
     // STRICT: pruning off a false-empty listing is a no-op, but pruning off a
     // PARTIAL one would trash the wrong files — fail the sync loudly instead.
-    const entries = await cli.listStrict(folder);
+    const [rawEntries, haBackups] = await Promise.all([
+        cli.listStrict(folder),
+        supervisor.listBackups().catch(() => []), // dates are a bonus; don't fail the prune
+    ]);
+    const entries = withResolvedDates(rawEntries, haBackups);
     const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton);
     console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
     for (const name of toPrune) {
@@ -685,8 +768,7 @@ export async function pruneProton() {
             console.log(`[orchestrator] Pruning Proton backup "${name}"`);
             await cli.trash(`${folder}/${name}`);
         } catch (err) {
-            state.lastError = `Proton prune failed: ${describeError(err)}`;
-            console.error(`[orchestrator] ${state.lastError}`);
+            recordError(`Proton prune failed: ${describeError(err)}`);
         }
     }
 }
@@ -718,28 +800,26 @@ export async function pruneHALocalNow() {
     // Candidates per bucket = the oldest backups beyond that bucket's keep (what
     // retention wants gone). Of those, we only actually delete ones in Proton;
     // the difference is reported as "skipped, not yet in Proton".
-    const ours = (haBackups || []).filter((b) => b && b.slug);
-    const bucketExcess = (bucket, keep) => (!keep || keep <= 0 ? 0 : Math.max(0, bucket.length - keep));
-    const automatic = ours.filter((b) => isAutomaticBackup(b.name));
-    const app = ours.filter((b) => !isAutomaticBackup(b.name));
-    const candidateCount = bucketExcess(automatic, keepAutomaticInHA) + bucketExcess(app, keepAppInHA);
-    const toDelete = selectHALocalToPrune(haBackups, protonSlugs, keepAutomaticInHA, keepAppInHA);
-    const skippedNotInProton = candidateCount - toDelete.length;
+    const { candidates, toDelete, skippedNotInProton } =
+        planHALocalPrune(haBackups, protonSlugs, keepAutomaticInHA, keepAppInHA);
+    const candidateCount = candidates.length;
 
     console.debug(`[orchestrator] pruneHALocalNow: keep_automatic=${keepAutomaticInHA} keep_app=${keepAppInHA} total_ha=${ours.length} candidates=${candidateCount} to_delete=${toDelete.length} skipped_not_in_proton=${skippedNotInProton}`);
 
     let deleted = 0;
+    let failed = 0;
     for (const slug of toDelete) {
         try {
             console.log(`[orchestrator] Deleting local HA backup ${slug} (confirmed present in Proton)`);
             await supervisor.deleteBackup(slug);
             deleted++;
         } catch (err) {
-            state.lastError = `HA clean-up failed: ${describeError(err)}`;
-            console.error(`[orchestrator] ${state.lastError}`);
+            failed++;
+            recordError(`HA clean-up failed for ${slug}: ${describeError(err)}`);
         }
     }
-    return { deleted, skippedNotInProton };
+    // Report what actually happened, not what was planned.
+    return { deleted, failed, skippedNotInProton };
 }
 
 export async function runSync(force = false) {
@@ -871,8 +951,7 @@ export async function restoreToHA(remoteName) {
         console.log(`[orchestrator] Restore of "${remoteName}" started (slug ${slug})`);
         return { slug };
     } catch (err) {
-        state.lastError = `Restore of "${remoteName}" failed: ${describeError(err)}`;
-        console.error(`[orchestrator] ${state.lastError}`);
+        recordError(`Restore of "${remoteName}" failed: ${describeError(err)}`);
         throw err;
     } finally {
         if (tmpPath) await rm(tmpPath, { force: true }).catch(() => {});

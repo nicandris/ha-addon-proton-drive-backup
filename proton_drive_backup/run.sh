@@ -5,6 +5,7 @@ export KEEP_AUTOMATIC_IN_PROTON="$(bashio::config 'keep_automatic_in_proton' 10)
 export KEEP_APP_IN_PROTON="$(bashio::config 'keep_app_in_proton' 10)"
 export KEEP_AUTOMATIC_IN_HA="$(bashio::config 'keep_automatic_in_ha' 0)"
 export KEEP_APP_IN_HA="$(bashio::config 'keep_app_in_ha' 0)"
+export AUTOMATIC_NAME_PREFIX="$(bashio::config 'automatic_name_prefix' 'Automatic backup')"
 if bashio::config.has_value 'backup_password'; then
     export BACKUP_PASSWORD="$(bashio::config 'backup_password')"
 else

@@ -21,6 +21,19 @@ import { spawn } from 'node:child_process';
 /** Absolute path (or bare name on $PATH) of the proton-drive binary. */
 const BIN = process.env.PROTON_DRIVE_BIN || 'proton-drive';
 
+
+/**
+ * Append to a captured stream buffer, keeping only the head and tail. A long
+ * upload (no timeout) or a 5-minute login can emit unbounded progress output;
+ * the only consumers are exit-code checks, a short debug line and error text.
+ */
+const CAP_BYTES = 64 * 1024;
+function capped(existing, chunk) {
+    const next = existing + chunk;
+    if (next.length <= CAP_BYTES * 2) return next;
+    return `${next.slice(0, CAP_BYTES)}\n…[output truncated]…\n${next.slice(-CAP_BYTES)}`;
+}
+
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
 
@@ -73,8 +86,8 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
             }, timeoutMs);
         }
 
-        child.stdout.on('data', (d) => { stdout += d.toString(); });
-        child.stderr.on('data', (d) => { stderr += d.toString(); });
+        child.stdout.on('data', (d) => { stdout = capped(stdout, d.toString()); });
+        child.stderr.on('data', (d) => { stderr = capped(stderr, d.toString()); });
 
         child.on('error', (err) => {
             if (timer) clearTimeout(timer);
@@ -137,8 +150,8 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
             }
         };
 
-        child.stdout.on('data', (d) => { const s = d.toString(); stdout += s; scan(s); });
-        child.stderr.on('data', (d) => { const s = d.toString(); stderr += s; scan(s); });
+        child.stdout.on('data', (d) => { const s = d.toString(); stdout = capped(stdout, s); scan(s); });
+        child.stderr.on('data', (d) => { const s = d.toString(); stderr = capped(stderr, s); scan(s); });
 
         child.on('error', (err) => {
             if (settled) return;

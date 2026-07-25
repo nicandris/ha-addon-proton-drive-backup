@@ -69,7 +69,7 @@ custom integration to install.
 | `keep_automatic_in_ha`  | int      | `0`                      | Newest local **automatic** backups to keep in HA. Used **only** by the manual **Clean up local backups** button. `0` = keep all (no clean-up of that bucket). |
 | `keep_app_in_ha`        | int      | `0`                      | Newest local **app** backups to keep in HA. Used **only** by the manual **Clean up local backups** button. `0` = keep all (no clean-up of that bucket). |
 | `backup_password`       | password | (empty)                  | Password to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty otherwise. |
-| `log_level`             | list     | `info`                   | One of `trace`, `debug`, `info`, `notice`, `warning`, `error`, `fatal`.                                              |
+| `log_level`             | list     | `info`                   | One of `trace`, `debug`, `info`, `notice`, `warning`, `error`, `fatal`. Four levels exist internally, so `trace`→`debug`, `notice`→`info`, `fatal`→`error`.  |
 
 There is **no email / password / 2FA option** — authentication is handled by
 Proton's browser sign-in (see below).
@@ -96,9 +96,11 @@ The app exposes an ingress web UI (the **Proton Backup** sidebar panel, or
   shows "Syncing…" and is disabled while a sync is already running.
 - **Clean up local backups** — manually delete local Home Assistant backups
   beyond the newest `keep_automatic_in_ha` automatic / `keep_app_in_ha` app, but
-  only ones already copied to Proton (never an un-mirrored backup, in either
-  bucket). Reports how many were deleted vs skipped.
+  only ones already copied to Proton **and verified there by size** (never an
+  un-mirrored or partially-uploaded backup, in either bucket). Reports how many
+  were deleted vs skipped.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
+  Runs in the background; the status card shows each step while it works.
 - **Delete** — remove a backup from Proton Drive.
 - Change the **log level** at runtime.
 
@@ -134,11 +136,13 @@ now** it:
 
 1. Lists **all** Home Assistant backups (automatic + manual) and everything in
    the Proton Drive folder.
-2. Downloads any HA backup whose slug isn't already in Proton from the Supervisor
-   (staged in a temp dir **outside `/data`** — see below) and uploads it to the
-   Drive folder as `<name> (<slug>).tar`. A backup that HA lists but can no
-   longer serve (a `404` on download — a stale/phantom entry) is skipped with a
-   warning rather than failing the whole sync.
+2. Downloads any HA backup that isn't already in Proton — matched by slug **and**
+   size, so a partially-uploaded copy is re-done — from the Supervisor (staged in a
+   temp dir **outside `/data`**, see below) and uploads it to the Drive folder as
+   `<name> (<slug>).tar`. A backup that HA lists but can no longer serve (a `404`
+   on download — a stale/phantom entry) is skipped with a warning rather than
+   failing the whole sync. If the Drive folder can't be listed, the sync stops with
+   an error instead of assuming it is empty.
 3. Prunes Proton Drive in two independent buckets — `keep_automatic_in_proton`
    for "Automatic backup" archives and `keep_app_in_proton` for the rest (oldest
    by date within each). Local Home Assistant clean-up is **not** part of the
@@ -147,12 +151,14 @@ now** it:
 
 Downloads are staged in the container's ephemeral tmp dir, **not** under
 `/data`, because HA full-backups include the app's `/data` volume — staging a
-multi-GB `.tar` there would let a backup swallow it. Override the staging
-location with the optional **`STAGING_DIR`** environment variable if you need to
-point it elsewhere.
+multi-GB `.tar` there would let a backup swallow it. Stale staged archives (left by
+a stop mid-transfer) are removed at start-up, and every download is preceded by a
+free-space check. **`STAGING_DIR`** is an advanced, environment-only override of
+that location (not a Configuration-tab option).
 
-**Restore** downloads the chosen backup from Proton Drive and hands it to the
-Supervisor, which performs the restore.
+**Restore** streams the chosen backup from Proton Drive to the Supervisor, which
+performs the restore. It runs in the background under the same lock as a sync,
+with progress shown in the Web UI.
 
 The CLI has no metadata API, so remote backups are identified by **filename**.
 The `(slug)` suffix is the HA backup's stable, unique id, used to deduplicate
@@ -196,7 +202,8 @@ endorsed by, or supported by Proton AG. It uses Proton's official, MIT-licensed
   CLI (`proton-drive` v0.6.0). The `filesystem list --json` output shape it emits
   is still being nailed down between CLI releases; the app parses it defensively
   (as of 0.2.4 it reads the CLI's `Result`-wrapped `name` and the size at
-  `activeRevision.value.claimedSize`) and logs the raw output at debug level.
+  `activeRevision.value.claimedSize`). Debug logs list only the names and sizes the
+  app uses, not Proton's raw payload.
 - **Per-sync skip of un-servable backups.** If HA lists a backup but returns a
   `404` when the app tries to download it (a stale/phantom entry), that backup is
   skipped with a warning each sync. Delete the entry in HA to silence it.

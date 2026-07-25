@@ -24,3 +24,6 @@ out/
 
 # OS
 .DS_Store
+
+# Local assistant guidance — not part of the published add-on
+CLAUDE.md
