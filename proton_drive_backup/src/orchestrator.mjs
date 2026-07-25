@@ -804,7 +804,7 @@ export async function pruneHALocalNow() {
         planHALocalPrune(haBackups, protonSlugs, keepAutomaticInHA, keepAppInHA);
     const candidateCount = candidates.length;
 
-    console.debug(`[orchestrator] pruneHALocalNow: keep_automatic=${keepAutomaticInHA} keep_app=${keepAppInHA} total_ha=${ours.length} candidates=${candidateCount} to_delete=${toDelete.length} skipped_not_in_proton=${skippedNotInProton}`);
+    console.debug(`[orchestrator] pruneHALocalNow: keep_automatic=${keepAutomaticInHA} keep_app=${keepAppInHA} total_ha=${(haBackups || []).length} candidates=${candidateCount} to_delete=${toDelete.length} skipped_not_in_proton=${skippedNotInProton}`);
 
     let deleted = 0;
     let failed = 0;

@@ -7,6 +7,11 @@
 
 ## Latest release highlights
 
+- **0.4.8** — **Fixes "Clean up local backups", broken since 0.4.3** (it errored
+  out and deleted nothing). Found by a big test expansion (111 tests, up from 85)
+  that now covers the sync/restore/clean-up flows and every Web UI endpoint. Also
+  documents that a Home Assistant full backup contains your Proton sign-in session.
+
 - **0.4.7** — **The panel opens instantly.** It no longer waits on the Proton CLI
   and Supervisor before rendering (several seconds of "Loading…", sometimes
   flashing "Connect" at a connected user); it renders at once and the slow parts
