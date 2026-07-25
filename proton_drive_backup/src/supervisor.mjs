@@ -26,6 +26,21 @@ function authHeaders(extra = {}) {
     return { Authorization: `Bearer ${token()}`, ...extra };
 }
 
+/**
+ * Unwrap the Supervisor's `{result, data, message}` envelope. Shared by the
+ * fetch-based short calls and the node:http long calls so there is exactly one
+ * place that decides what "failed" means.
+ */
+function unwrapEnvelope(json, method, path, httpOk, statusText) {
+    if (!json || typeof json !== 'object') {
+        throw new Error(`Supervisor ${method} ${path} returned no JSON envelope (${statusText})`);
+    }
+    if (json.result === 'error' || !httpOk) {
+        throw new Error(`Supervisor ${method} ${path} failed: ${json.message || statusText}`);
+    }
+    return json.data;
+}
+
 async function supervisorJson(method, path, body) {
     console.debug(`[supervisor] ${method} ${path}`);
     const headers = authHeaders();
@@ -41,13 +56,76 @@ async function supervisorJson(method, path, body) {
     } catch {
         throw new Error(`Supervisor ${method} ${path} returned non-JSON (HTTP ${resp.status})`);
     }
-    if (json.result === 'error' || !resp.ok) {
-        throw new Error(`Supervisor ${method} ${path} failed: ${json.message || resp.statusText}`);
-    }
+    const data = unwrapEnvelope(json, method, path, resp.ok, resp.statusText || `HTTP ${resp.status}`);
     console.debug(`[supervisor] ${method} ${path} → OK`);
-    return json.data;
+    return data;
 }
 
+/**
+ * Same as `supervisorJson`, but over `node:http` — for the calls that legitimately
+ * take longer than five minutes.
+ *
+ * Node's global `fetch` (undici) applies a ~300 s **headers** timeout that cannot
+ * be raised per-request. `POST /backups/new/full` and `.../restore/full` with
+ * `background:false` block until Home Assistant finishes, which on a multi-GB
+ * instance easily exceeds that — the request then rejected with
+ * `UND_ERR_HEADERS_TIMEOUT` ("Backup creation failed: fetch failed") while HA
+ * carried on and completed the backup, and the mirror step was skipped.
+ * `node:http` has no default timeout, so the call simply waits.
+ */
+function supervisorLongJson(method, path, body) {
+    console.debug(`[supervisor] ${method} ${path} (long-running, node:http)`);
+    const base = new URL(BASE_URL);
+    const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
+    const headers = authHeaders(
+        payload ? { 'Content-Type': 'application/json', 'Content-Length': String(payload.length) } : {},
+    );
+
+    return new Promise((resolve, reject) => {
+        const req = httpRequest(
+            {
+                protocol: base.protocol,
+                hostname: base.hostname,
+                port: base.port || 80,
+                path,
+                method,
+                headers,
+            },
+            (res) => {
+                const chunks = [];
+                res.on('data', (c) => chunks.push(c));
+                res.on('error', reject);
+                res.on('end', () => {
+                    const text = Buffer.concat(chunks).toString('utf8');
+                    let json;
+                    try {
+                        json = JSON.parse(text);
+                    } catch {
+                        reject(new Error(`Supervisor ${method} ${path} returned non-JSON (HTTP ${res.statusCode})`));
+                        return;
+                    }
+                    const httpOk = !!res.statusCode && res.statusCode < 400;
+                    try {
+                        const data = unwrapEnvelope(json, method, path, httpOk, `HTTP ${res.statusCode}`);
+                        console.debug(`[supervisor] ${method} ${path} → OK`);
+                        resolve(data);
+                    } catch (err) {
+                        reject(err);
+                    }
+                });
+            },
+        );
+        req.on('error', reject);
+        if (payload) req.write(payload);
+        req.end();
+    });
+}
+
+/**
+ * All Home Assistant backups. Each entry has `slug`, `name`, `date`, `size`
+ * (**MB**, rounded to 2 dp by the Supervisor) and, on recent Supervisor
+ * versions, `size_bytes`.
+ */
 export async function listBackups() {
     const data = await supervisorJson('GET', '/backups');
     const backups = data.backups || [];
@@ -55,23 +133,23 @@ export async function listBackups() {
     return backups;
 }
 
-export async function getBackupInfo(slug) {
-    return supervisorJson('GET', `/backups/${slug}/info`);
-}
-
 /** Host info (disk_total / disk_used / disk_free in GB) for the stats panel. */
 export async function hostInfo() {
     return supervisorJson('GET', '/host/info');
 }
 
-/** Create a new full Home Assistant backup (blocks until done). Returns the slug. */
+/**
+ * Create a new full Home Assistant backup (blocks until done). Returns the slug.
+ * Uses the long-running transport — a multi-GB backup takes well over undici's
+ * 300 s headers timeout.
+ */
 export async function createBackup({ name, password } = {}) {
     const body = { name, compressed: true, background: false };
     if (password) body.password = password;
     console.debug(`[supervisor] createBackup: name="${name}" password=${password ? 'set' : 'none'}`);
-    const data = await supervisorJson('POST', '/backups/new/full', body);
-    console.debug(`[supervisor] createBackup: created slug=${data.slug}`);
-    return data.slug;
+    const data = await supervisorLongJson('POST', '/backups/new/full', body);
+    console.debug(`[supervisor] createBackup: created slug=${data?.slug}`);
+    return data?.slug;
 }
 
 export async function downloadBackup(slug, destPath) {
@@ -174,9 +252,13 @@ export async function deleteBackup(slug) {
     console.debug(`[supervisor] deleteBackup: ${slug} deleted`);
 }
 
+/**
+ * Start a full restore and wait for it. Long-running transport for the same
+ * reason as `createBackup` (a restore blocks for as long as it takes).
+ */
 export async function restoreBackup(slug, password) {
     console.debug(`[supervisor] restoreBackup: slug=${slug} password=${password ? 'set' : 'none'}`);
     const body = { background: false };
     if (password) body.password = password;
-    return supervisorJson('POST', `/backups/${slug}/restore/full`, body);
+    return supervisorLongJson('POST', `/backups/${slug}/restore/full`, body);
 }

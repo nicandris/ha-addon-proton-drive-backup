@@ -7,6 +7,9 @@
  * The CLI has NO metadata API, so remote backups are identified purely by
  * FILENAME. Each HA backup is stored remotely as `<sanitizedName> (<slug>).tar`;
  * the `(slug)` suffix is the HA backup's stable, unique id, which drives dedup.
+ * A matching filename alone is NOT proof of a good copy — the remote SIZE must
+ * also match the HA backup's size (`mirroredSlugs`), or a truncated upload would
+ * be trusted as "offsite" and could justify deleting the last local copy.
  *
  * Retention (split into two independent buckets — AUTOMATIC vs APP — so a burst
  * of small per-add-on "app" backups can never evict the important scheduled
@@ -27,8 +30,8 @@
  * the ingress server).
  */
 
-import { mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, readdir, rm, stat, statfs } from 'node:fs/promises';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import * as supervisor from './supervisor.mjs';
@@ -71,6 +74,8 @@ let cachedFolderPath = null;
 // on retention and re-upload. Only one sync runs at a time.
 let syncing = false;
 
+// Single source of truth for env-derived config (main.mjs and the UI both read
+// it through the exported wrappers below — there is no second copy).
 function cfg() {
     return {
         driveFolder: process.env.DRIVE_FOLDER || 'Home Assistant Backups',
@@ -80,7 +85,7 @@ function cfg() {
         keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
         keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
         backupPassword: process.env.BACKUP_PASSWORD || undefined,
-        dataDir: process.env.DATA_DIR || '/data',
+        stagingDir: process.env.STAGING_DIR || null,
     };
 }
 
@@ -98,21 +103,128 @@ export function getConfig() {
         keepAutomaticInHA: c.keepAutomaticInHA,
         keepAppInHA: c.keepAppInHA,
         backupPasswordSet: !!c.backupPassword,
-        stagingDir: process.env.STAGING_DIR || null,
+        stagingDir: c.stagingDir,
     };
 }
 
+/**
+ * Everything `main.mjs` needs at boot: the UI-safe config plus the two
+ * process-level settings. Never contains the backup password (main logs the
+ * whole object at debug level).
+ */
+export function getRuntimeConfig() {
+    return {
+        ...getConfig(),
+        logLevel: (process.env.LOG_LEVEL || 'info').toLowerCase(),
+        port: parseInt(process.env.PORT || '8099', 10),
+        effectiveStagingDir: tmpDir(),
+    };
+}
+
+/**
+ * Where archives are staged. `STAGING_DIR` is an **advanced, env-only override**
+ * (deliberately not a config.yaml option — an add-on can't `map:` an arbitrary
+ * host path, so exposing it in the UI would only invite broken values).
+ *
+ * Stage downloads OUTSIDE /data. HA full-backups include the add-on's /data
+ * volume, so a backup created while a temp `.tar` sat in /data/tmp would swallow
+ * it (observed: a 4.87 GB backup ballooning to 9.74 GB). The container's tmpdir
+ * is ephemeral and is never part of an HA backup.
+ */
 function tmpDir() {
-    // Stage downloads OUTSIDE /data. HA full-backups include the add-on's /data
-    // volume, so a backup created while a temp `.tar` sat in /data/tmp would
-    // swallow it (observed: a 4.87 GB backup ballooning to 9.74 GB). The
-    // container's tmpdir is ephemeral and is never part of an HA backup.
     return process.env.STAGING_DIR || join(tmpdir(), 'proton-drive-backup');
+}
+
+function fmtBytes(n) {
+    if (!Number.isFinite(n)) return String(n);
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let v = n;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return `${v.toFixed(1)} ${units[i]}`;
+}
+
+/**
+ * Delete leftover staged archives on boot.
+ *
+ * Nothing cleaned the staging dir before 0.4.1: SIGTERM exits immediately, so an
+ * add-on stop/restart mid-upload left a multi-GB `.tar` behind. On HA OS the
+ * container tmpdir survives a restart, so those orphans accumulated until the
+ * host disk filled.
+ *
+ * @returns {Promise<{removed:number, bytes:number}>}
+ */
+export async function cleanStagingDir() {
+    const dir = tmpDir();
+    await mkdir(dir, { recursive: true }).catch(() => {});
+    let names = [];
+    try {
+        names = await readdir(dir);
+    } catch (err) {
+        console.warn(`[orchestrator] Staging clean-up: cannot read "${dir}" (${err.message})`);
+        return { removed: 0, bytes: 0 };
+    }
+    let removed = 0;
+    let bytes = 0;
+    for (const name of names) {
+        if (!name.endsWith('.tar')) continue;
+        const p = join(dir, name);
+        try {
+            const st = await stat(p);
+            await rm(p, { force: true });
+            removed++;
+            bytes += st.size;
+            console.log(`[orchestrator] Removed stale staged archive "${name}" (${fmtBytes(st.size)})`);
+        } catch (err) {
+            console.warn(`[orchestrator] Could not remove stale staged archive "${name}": ${err.message}`);
+        }
+    }
+    console.log(removed
+        ? `[orchestrator] Staging clean-up: removed ${removed} stale archive(s), reclaimed ${fmtBytes(bytes)} from ${dir}`
+        : `[orchestrator] Staging clean-up: nothing stale in ${dir}`);
+    return { removed, bytes };
+}
+
+/** Free bytes on the filesystem holding `dir`, or null if it can't be read. */
+async function freeSpaceBytes(dir) {
+    try {
+        const st = await statfs(dir);
+        return Number(st.bsize) * Number(st.bavail);
+    } catch (err) {
+        console.debug(`[orchestrator] statfs("${dir}") failed: ${err.message}`);
+        return null;
+    }
 }
 
 /** A download error for a backup HA lists but no longer serves (stale/phantom). */
 export function isNotFoundError(err) {
     return err?.status === 404;
+}
+
+/**
+ * Is `name` a safe remote backup filename?
+ *
+ * `name` arrives from an unauthenticated HTTP body (ingress is only reachable
+ * inside HA, but any other container on the Supervisor network can POST to it),
+ * and it is interpolated into both a Drive path and a local staging path. A
+ * `../../…` payload escaped the Drive folder AND the staging dir — and the
+ * restore `finally` `rm()` ran even on failure, i.e. arbitrary file deletion in
+ * the container. Only a bare `*.tar` filename is accepted.
+ */
+export function isValidRemoteName(name) {
+    if (typeof name !== 'string') return false;
+    if (name.length === 0 || name.length > 255) return false;
+    if (name.includes('/') || name.includes('\\')) return false;
+    if (/[\x00-\x1f\x7f]/.test(name)) return false; // control chars incl. NUL
+    if (name === '.' || name === '..') return false;
+    if (basename(name) !== name) return false;
+    return name.endsWith('.tar');
+}
+
+function assertValidRemoteName(name) {
+    if (!isValidRemoteName(name)) {
+        throw new Error(`Invalid backup name "${name}" — must be a plain ".tar" filename with no path separators.`);
+    }
 }
 
 /** Resolve (and create if needed) the remote backup folder under /my-files. */
@@ -172,32 +284,116 @@ export function slugFromRemoteName(remoteName) {
     return m ? m[1] : null;
 }
 
-/** Build a Set of the HA backup slugs currently mirrored in Proton. */
-function protonSlugSet(remoteEntries) {
-    const set = new Set();
-    for (const e of remoteEntries || []) {
-        const slug = slugFromRemoteName(e?.name);
-        if (slug) set.add(slug);
-    }
-    return set;
-}
-
 // --- Pure decision logic (no I/O) — unit-tested in test/orchestrator.test.mjs ---
 
 /**
- * Which HA backups are not yet mirrored in Proton? Dedup by the HA backup slug
- * (parsed from each Proton entry's filename). Uploads ALL HA backups — automatic
- * and manual — whose slug is absent from Proton.
- * @param {Array<{slug:string,name:string}>} haBackups
- * @param {Array<{name:string}>} remoteEntries - Proton folder entries.
- * @returns {Array<{slug:string, name:string, remoteName:string}>}
+ * Default relative size tolerance when matching an HA backup against its Proton
+ * copy, plus an absolute floor.
+ *
+ * UNITS: the Supervisor reports a backup's `size` in **MB** (`st_size / 1048576`,
+ * rounded to 2 dp) and, on recent versions, also `size_bytes`. Proton's
+ * `activeRevision.value.claimedSize` is in **bytes**. We normalise HA to bytes
+ * (`size_bytes` when present, else `size * 1048576`), so the only intrinsic
+ * imprecision is HA's 2-dp rounding (±~5 KiB). The 64 KiB floor covers that with
+ * room to spare; the 1% relative term covers a future units/format change without
+ * ever accepting an obviously truncated upload.
  */
-export function selectToUpload(haBackups, remoteEntries) {
-    const present = protonSlugSet(remoteEntries);
+export const SIZE_TOLERANCE = 0.01;
+const SIZE_TOLERANCE_FLOOR_BYTES = 64 * 1024;
+
+/**
+ * An HA backup's size in BYTES, or null if HA didn't report one.
+ * @param {{size?:number, size_bytes?:number}} backup
+ */
+export function haBackupSizeBytes(backup) {
+    const direct = Number(backup?.size_bytes ?? backup?.sizeBytes);
+    if (Number.isFinite(direct) && direct > 0) return Math.round(direct);
+    const mb = Number(backup?.size);
+    if (Number.isFinite(mb) && mb > 0) return Math.round(mb * 1024 * 1024);
+    return null;
+}
+
+/** Do an expected size and a remote size agree within `tolerance` (both bytes)? */
+export function sizesMatch(expectedBytes, remoteBytes, tolerance = SIZE_TOLERANCE) {
+    if (!Number.isFinite(expectedBytes) || expectedBytes <= 0) return false;
+    if (!Number.isFinite(remoteBytes) || remoteBytes <= 0) return false;
+    const allowed = Math.max(expectedBytes * Math.abs(tolerance), SIZE_TOLERANCE_FLOOR_BYTES);
+    return Math.abs(remoteBytes - expectedBytes) <= allowed;
+}
+
+/** Map slug → the Proton entry that claims it (largest size wins on duplicates). */
+function remoteEntriesBySlug(remoteEntries) {
+    const bySlug = new Map();
+    for (const e of remoteEntries || []) {
+        const slug = slugFromRemoteName(e?.name);
+        if (!slug) continue;
+        const prev = bySlug.get(slug);
+        if (!prev || (Number(e?.size) || 0) > (Number(prev?.size) || 0)) bySlug.set(slug, e);
+    }
+    return bySlug;
+}
+
+/**
+ * Which HA backups are VERIFIABLY mirrored in Proton?
+ *
+ * A remote file whose name carries `(slug)` is not proof on its own: an upload
+ * interrupted after the node became visible under its final name leaves a
+ * short/empty file. Before 0.4.1 that counted as "safely offsite", so the next
+ * sync skipped it AND "Clean up local backups" could delete the last good local
+ * copy — the one data-loss path. A slug is only mirrored when the remote entry
+ * also reports a size matching the HA backup's size.
+ *
+ * A remote entry with **no size**, or an HA backup with **no reported size**, is
+ * treated as NOT verified (fail closed: re-upload rather than risk deleting).
+ *
+ * @param {Array<{slug:string,size?:number,size_bytes?:number}>} haBackups
+ * @param {Array<{name:string,size?:number}>} remoteEntries
+ * @param {{tolerance?:number}} [opts]
+ * @returns {Set<string>} slugs confirmed present AND size-matched in Proton.
+ */
+export function mirroredSlugs(haBackups, remoteEntries, { tolerance = SIZE_TOLERANCE } = {}) {
+    const bySlug = remoteEntriesBySlug(remoteEntries);
+    const verified = new Set();
+    for (const b of haBackups || []) {
+        if (!b || !b.slug) continue;
+        const entry = bySlug.get(b.slug);
+        if (!entry) continue;
+        const expected = haBackupSizeBytes(b);
+        const remote = Number(entry.size);
+        if (sizesMatch(expected, remote, tolerance)) {
+            verified.add(b.slug);
+        } else {
+            console.warn(
+                `[orchestrator] Proton copy of ${b.slug} ("${entry.name}") is NOT verified: `
+                + `remote size ${Number.isFinite(remote) ? remote : 'unknown'} vs HA ${expected ?? 'unknown'} bytes `
+                + '— treating it as not mirrored (will re-upload; never counted as a reason to delete the local copy).',
+            );
+        }
+    }
+    return verified;
+}
+
+/**
+ * Which HA backups are not yet mirrored in Proton? Dedup by the HA backup slug
+ * (parsed from each Proton entry's filename) AND by size (`mirroredSlugs`), so a
+ * truncated/partial remote copy is re-uploaded instead of trusted. Returns ALL
+ * HA backups — automatic and manual — that aren't verifiably mirrored.
+ * @param {Array<{slug:string,name:string,size?:number,size_bytes?:number}>} haBackups
+ * @param {Array<{name:string,size?:number}>} remoteEntries - Proton folder entries.
+ * @param {{tolerance?:number}} [opts]
+ * @returns {Array<{slug:string, name:string, remoteName:string, sizeBytes:number|null}>}
+ */
+export function selectToUpload(haBackups, remoteEntries, opts) {
+    const verified = mirroredSlugs(haBackups, remoteEntries, opts);
     return (haBackups || [])
         .filter((b) => b && b.slug)
-        .map((b) => ({ slug: b.slug, name: b.name, remoteName: remoteNameFor(b) }))
-        .filter((x) => !present.has(x.slug));
+        .map((b) => ({
+            slug: b.slug,
+            name: b.name,
+            remoteName: remoteNameFor(b),
+            sizeBytes: haBackupSizeBytes(b),
+        }))
+        .filter((x) => !verified.has(x.slug));
 }
 
 /**
@@ -239,6 +435,8 @@ export function selectProtonToPrune(entries, keepAutomatic, keepApp) {
  *
  * @param {Array<{slug:string,name?:string,date?:string}>} haBackups
  * @param {Set<string>|string[]} protonSlugs - slugs confirmed present in Proton.
+ *   Callers MUST pass a size-verified set (`mirroredSlugs`), never a set built
+ *   from filenames alone.
  * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = delete none.
  * @param {number} keepApp - newest app backups to keep; <=0 = delete none.
  * @returns {string[]} slugs to delete (all of which are in protonSlugs).
@@ -291,6 +489,8 @@ export function getStatus() {
  */
 export async function listProtonBackups() {
     const folder = await remoteFolder();
+    // Lenient list: this is display only, so an unreadable folder showing as
+    // empty is harmless (the sync path uses cli.listStrict instead).
     const entries = await cli.list(folder);
     return entries
         .filter((e) => isOurRemoteFile(e.name))
@@ -299,8 +499,9 @@ export async function listProtonBackups() {
 
 /** Delete (trash) one mirrored backup by its remote filename. */
 export async function deleteProtonBackup(remoteName) {
+    assertValidRemoteName(remoteName); // never let a caller escape the folder
     const folder = await remoteFolder();
-    // Remote names don't contain '/', so no escaping is needed here.
+    // Validated as a bare filename above, so no escaping is needed here.
     await cli.trash(`${folder}/${remoteName}`);
 }
 
@@ -323,12 +524,17 @@ export async function ensureSession() {
 async function syncBackupsToProton() {
     const folder = await remoteFolder();
     console.debug('[orchestrator] syncBackupsToProton: listing HA and Proton backups...');
+    // STRICT list: a failed/unparseable listing must abort the sync. Treated as
+    // "empty" it would look like nothing is mirrored and re-upload EVERYTHING
+    // with `-c replace` (tens of GB) while resetting every modificationTime,
+    // which is what Proton retention sorts by.
     const [haBackups, remoteEntries] = await Promise.all([
         supervisor.listBackups(),
-        cli.list(folder),
+        cli.listStrict(folder),
     ]);
 
-    // Dedup by HA slug — every HA backup (automatic + manual) not yet in Proton.
+    // Dedup by HA slug + size — every HA backup (automatic + manual) that isn't
+    // verifiably mirrored in Proton.
     const toUpload = selectToUpload(haBackups, remoteEntries);
     console.debug(`[orchestrator] HA backups: ${haBackups.length}, Proton files: ${remoteEntries.length}, to upload: ${toUpload.length}`);
 
@@ -344,6 +550,17 @@ async function syncBackupsToProton() {
         // `<sanitizedName> (<slug>).tar` remotely.
         const tmpPath = join(tmpDir(), item.remoteName);
         try {
+            // Don't start a multi-GB download that can't fit — a half-written
+            // archive would fail the upload and fill the host disk.
+            if (item.sizeBytes) {
+                const free = await freeSpaceBytes(tmpDir());
+                if (free != null && free < item.sizeBytes) {
+                    skipped++;
+                    state.lastError = `Not enough space to stage ${item.slug} ("${item.name}"): needs ${fmtBytes(item.sizeBytes)}, only ${fmtBytes(free)} free in ${tmpDir()}.`;
+                    console.error(`[orchestrator] ${state.lastError}`);
+                    continue;
+                }
+            }
             console.log(`[orchestrator] Uploading HA backup ${item.slug} ("${item.name}") to Proton`);
             console.debug(`[orchestrator] Downloading from Supervisor → ${tmpPath}`);
             await supervisor.downloadBackup(item.slug, tmpPath);
@@ -378,7 +595,9 @@ export async function pruneProton() {
     }
 
     const folder = await remoteFolder();
-    const entries = await cli.list(folder);
+    // STRICT: pruning off a false-empty listing is a no-op, but pruning off a
+    // PARTIAL one would trash the wrong files — fail the sync loudly instead.
+    const entries = await cli.listStrict(folder);
     const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton);
     console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
     for (const name of toPrune) {
@@ -406,11 +625,15 @@ export async function pruneHALocalNow() {
     }
 
     const folder = await remoteFolder();
+    // STRICT: this path DELETES local backups, so it must never run on a
+    // half-read listing.
     const [haBackups, remoteEntries] = await Promise.all([
         supervisor.listBackups(),
-        cli.list(folder),
+        cli.listStrict(folder),
     ]);
-    const protonSlugs = protonSlugSet(remoteEntries);
+    // SIZE-VERIFIED slugs only: a remote file that exists but doesn't match the
+    // HA backup's size is not proof the backup is safely offsite (H4).
+    const protonSlugs = mirroredSlugs(haBackups, remoteEntries);
 
     // Candidates per bucket = the oldest backups beyond that bucket's keep (what
     // retention wants gone). Of those, we only actually delete ones in Proton;
@@ -529,28 +752,51 @@ export async function createBackupNow() {
 /**
  * Restore a Proton backup (identified by its remote filename) into HA:
  * download it, upload it to the Supervisor, then start a full restore.
+ *
+ * Takes the same single-operation guard as a sync and publishes `activity`, so
+ * the UI no longer says "Idle" through a multi-GB restore and a concurrent sync
+ * can't stage into the same tmp dir. Records `state.lastError` on failure (the
+ * caller is fire-and-forget) and rethrows for callers that do await.
  */
 export async function restoreToHA(remoteName) {
+    assertValidRemoteName(remoteName); // path traversal guard (also in the route)
+    if (syncing) {
+        throw new Error('A sync, backup or restore is already running — try again when it finishes.');
+    }
     const { backupPassword } = cfg();
     console.debug(`[orchestrator] restoreToHA: remoteName="${remoteName}"`);
-    const connected = await ensureSession();
-    if (!connected) throw new Error('Not connected to Proton Drive — sign in from the Web UI.');
-
-    const folder = await remoteFolder();
-    await mkdir(tmpDir(), { recursive: true });
+    syncing = true;
     // CLI downloads INTO a folder, keeping the remote filename.
-    const tmpPath = join(tmpDir(), remoteName);
+    let tmpPath = null;
     try {
+        state.lastError = null;
+        setActivity(`Restoring ${remoteName}: checking connection…`);
+        const connected = await ensureSession();
+        if (!connected) throw new Error('Not connected to Proton Drive — sign in from the Web UI.');
+
+        const folder = await remoteFolder();
+        await mkdir(tmpDir(), { recursive: true });
+        tmpPath = join(tmpDir(), remoteName);
+
         console.log(`[orchestrator] Restoring Proton backup "${remoteName}"`);
+        setActivity(`Restoring ${remoteName}: downloading from Proton Drive…`);
         console.debug('[orchestrator] restoreToHA: downloading from Drive...');
         await cli.downloadPath(`${folder}/${remoteName}`, tmpDir());
+        setActivity(`Restoring ${remoteName}: uploading to Home Assistant…`);
         console.debug('[orchestrator] restoreToHA: uploading to Supervisor...');
         const slug = await supervisor.uploadBackup(tmpPath);
+        setActivity(`Restoring ${remoteName}: Home Assistant is restoring…`);
         console.debug(`[orchestrator] restoreToHA: starting HA restore for slug=${slug}...`);
         await supervisor.restoreBackup(slug, backupPassword);
         console.log(`[orchestrator] Restore of "${remoteName}" started (slug ${slug})`);
         return { slug };
+    } catch (err) {
+        state.lastError = `Restore of "${remoteName}" failed: ${describeError(err)}`;
+        console.error(`[orchestrator] ${state.lastError}`);
+        throw err;
     } finally {
-        await rm(tmpPath, { force: true }).catch(() => {});
+        if (tmpPath) await rm(tmpPath, { force: true }).catch(() => {});
+        syncing = false;
+        setActivity(null);
     }
 }

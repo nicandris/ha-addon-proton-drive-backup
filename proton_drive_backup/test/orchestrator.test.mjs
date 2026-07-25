@@ -11,6 +11,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 console.debug = () => {};
+console.warn = () => {}; // mirroredSlugs warns about unverified remote copies
 
 const o = await import('../src/orchestrator.mjs');
 
@@ -72,18 +73,23 @@ test('isNotFoundError is true only for a 404-tagged error', () => {
     assert.equal(o.isNotFoundError(null), false);
 });
 
+// HA reports `size` in MB; Proton reports bytes. Helper for readable fixtures.
+const MB = 1024 * 1024;
+
 test('selectToUpload returns ALL HA backups (auto + manual) whose slug is missing from Proton', () => {
     const ha = [
-        { slug: 's1', name: 'Automatic backup 2026.7.1' }, // missing → upload
-        { slug: 's2', name: 'Automatic backup 2026.7.2' }, // present → skip
-        { slug: 's3', name: 'Manual snapshot' },           // manual, missing → upload
+        { slug: 's1', name: 'Automatic backup 2026.7.1', size: 100 }, // missing → upload
+        { slug: 's2', name: 'Automatic backup 2026.7.2', size: 100 }, // present + size OK → skip
+        { slug: 's3', name: 'Manual snapshot', size: 50 },            // manual, missing → upload
     ];
     // Proton has s2 already (matched by the slug parsed from its filename).
-    const remote = [{ name: 'Automatic backup 2026.7.2 (s2).tar' }];
+    const remote = [{ name: 'Automatic backup 2026.7.2 (s2).tar', size: 100 * MB }];
     const out = o.selectToUpload(ha, remote);
     assert.equal(out.length, 2);
     assert.deepEqual(out.map((x) => x.slug).sort(), ['s1', 's3']);
     assert.equal(out.find((x) => x.slug === 's3').remoteName, 'Manual snapshot (s3).tar');
+    // The HA size is carried through in bytes (used for the free-space check).
+    assert.equal(out.find((x) => x.slug === 's3').sizeBytes, 50 * MB);
 });
 
 test('selectToUpload handles empty/nullish inputs and drops slug-less backups', () => {
@@ -91,6 +97,93 @@ test('selectToUpload handles empty/nullish inputs and drops slug-less backups', 
     assert.deepEqual(o.selectToUpload(null, null), []);
     assert.equal(o.selectToUpload([{ slug: 's', name: 'a' }], null).length, 1);
     assert.deepEqual(o.selectToUpload([{ name: 'no-slug' }], []), []);
+});
+
+// --- H4: a remote file is only "mirrored" if its SIZE matches too ------------
+
+test('haBackupSizeBytes prefers size_bytes, falls back to MB→bytes, else null', () => {
+    assert.equal(o.haBackupSizeBytes({ size_bytes: 12345 }), 12345);
+    assert.equal(o.haBackupSizeBytes({ size: 2.5 }), Math.round(2.5 * MB));
+    // size_bytes wins when both are present.
+    assert.equal(o.haBackupSizeBytes({ size: 1, size_bytes: 999 }), 999);
+    assert.equal(o.haBackupSizeBytes({}), null);
+    assert.equal(o.haBackupSizeBytes({ size: 0 }), null);
+    assert.equal(o.haBackupSizeBytes({ size: 'big' }), null);
+    assert.equal(o.haBackupSizeBytes(null), null);
+});
+
+test('sizesMatch tolerates HA MB rounding but rejects a truncated file', () => {
+    const exact = 4096 * MB;
+    assert.equal(o.sizesMatch(exact, exact), true);
+    assert.equal(o.sizesMatch(exact, exact + 5000), true);        // 2-dp MB rounding
+    assert.equal(o.sizesMatch(exact, Math.round(exact * 0.5)), false); // half-written
+    assert.equal(o.sizesMatch(exact, 0), false);
+    assert.equal(o.sizesMatch(exact, NaN), false);
+    assert.equal(o.sizesMatch(null, exact), false);
+    // Small file: the absolute floor applies rather than the 1% term.
+    assert.equal(o.sizesMatch(1024, 1024 + 4096), true);
+});
+
+test('mirroredSlugs: size match → mirrored; mismatch/missing size → NOT mirrored', () => {
+    const ha = [
+        { slug: 'ok', name: 'Automatic backup 1', size: 100 },
+        { slug: 'partial', name: 'Automatic backup 2', size: 100 },
+        { slug: 'nosize', name: 'Automatic backup 3', size: 100 },
+        { slug: 'noha', name: 'Automatic backup 4' }, // HA didn't report a size
+        { slug: 'absent', name: 'Automatic backup 5', size: 100 },
+    ];
+    const remote = [
+        { name: 'Automatic backup 1 (ok).tar', size: 100 * MB },
+        { name: 'Automatic backup 2 (partial).tar', size: 3 * MB }, // interrupted upload
+        { name: 'Automatic backup 3 (nosize).tar' },                // no size reported
+        { name: 'Automatic backup 4 (noha).tar', size: 100 * MB },
+    ];
+    const set = o.mirroredSlugs(ha, remote);
+    assert.deepEqual([...set], ['ok']);
+    for (const slug of ['partial', 'nosize', 'noha', 'absent']) {
+        assert.ok(!set.has(slug), `${slug} must not count as mirrored`);
+    }
+    assert.deepEqual([...o.mirroredSlugs(null, null)], []);
+});
+
+test('H4: a size-mismatched remote copy is RE-UPLOADED and is NOT deletable locally', () => {
+    const ha = [
+        { slug: 'good', name: 'Automatic backup new', date: '2026-07-24T05:00:00.000Z', size: 100 },
+        { slug: 'partial', name: 'Automatic backup old', date: '2026-07-24T01:00:00.000Z', size: 100 },
+    ];
+    const remote = [
+        { name: 'Automatic backup new (good).tar', size: 100 * MB, date: '2026-07-24T05:00:00.000Z' },
+        { name: 'Automatic backup old (partial).tar', size: 1 * MB, date: '2026-07-24T01:00:00.000Z' },
+    ];
+    // (1) re-uploaded
+    assert.deepEqual(o.selectToUpload(ha, remote).map((x) => x.slug), ['partial']);
+    // (2) never accepted as justification to delete the local copy
+    const verified = o.mirroredSlugs(ha, remote);
+    assert.deepEqual(o.selectHALocalToPrune(ha, verified, 1, 1), []);
+    // Sanity: with a full-size remote copy the same backup IS prunable.
+    const fixed = [remote[0], { ...remote[1], size: 100 * MB }];
+    assert.deepEqual(o.selectHALocalToPrune(ha, o.mirroredSlugs(ha, fixed), 1, 1), ['partial']);
+});
+
+// --- M2: path-traversal guard on the remote name ---------------------------
+
+test('isValidRemoteName accepts a bare .tar filename and rejects traversal payloads', () => {
+    assert.equal(o.isValidRemoteName('Automatic backup 2026.7.3 (a1b2c3d4).tar'), true);
+    assert.equal(o.isValidRemoteName('x.tar'), true);
+    for (const bad of [
+        '../x.tar', '../../etc/passwd', 'a/b.tar', 'a\\b.tar', '..', '.', '',
+        '/etc/shadow.tar', '/x.tar', './x.tar', 'x.txt', 'x.tar.gz', 'x',
+        'sub/../x.tar', 'bad\u0000.tar', 'nl\n.tar', 'x'.repeat(300) + '.tar',
+        null, undefined, 123, {}, ['x.tar'],
+    ]) {
+        assert.equal(o.isValidRemoteName(bad), false, `must reject ${JSON.stringify(bad)}`);
+    }
+});
+
+test('deleteProtonBackup/restoreToHA reject a traversing name before any I/O', async () => {
+    await assert.rejects(() => o.deleteProtonBackup('../../x.tar'), /Invalid backup name/);
+    await assert.rejects(() => o.restoreToHA('../../x.tar'), /Invalid backup name/);
+    await assert.rejects(() => o.restoreToHA('notatar'), /Invalid backup name/);
 });
 
 test('isAutomaticBackup matches "Automatic backup …" on names AND remote filenames', () => {

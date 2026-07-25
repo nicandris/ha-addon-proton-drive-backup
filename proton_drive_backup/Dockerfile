@@ -1,5 +1,8 @@
-FROM ghcr.io/home-assistant/base:3.21
-RUN apk add --no-cache nodejs
+FROM ghcr.io/home-assistant/base:3.24
+# Pin the Node MAJOR explicitly: Alpine 3.23+ ships Node 24, and an unpinned
+# `apk add nodejs` would silently follow the base image to a new major.
+# The test suite is verified on Node 24.
+RUN apk add --no-cache 'nodejs~=24'
 
 # HA provides BUILD_ARCH (amd64 | aarch64 | armv7 | ...). Only amd64/aarch64 have
 # a musl proton-drive build, so anything else fails the build explicitly.
