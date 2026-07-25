@@ -7,6 +7,38 @@
 
 ## Latest release highlights
 
+- **0.4.3** — Retention no longer risks deleting the wrong backup when Proton
+  reports **no timestamp**: dates come from Home Assistant (authoritative), and an
+  entry whose date can't be established is **never pruned**. New
+  **`automatic_name_prefix`** option (editable in the Web UI) — on a non-English
+  Home Assistant every scheduled backup was classified as an "app" backup, so the
+  automatic/app split silently did nothing; the sync now warns when the prefix
+  matches nothing. **Clean up local backups** reports what actually happened
+  (deleted / failed / skipped) rather than what was planned, errors keep a short
+  **history** instead of only the last one, **Clear** also clears the listing and
+  sign-in errors, and long uploads/sign-ins can no longer grow memory through
+  unbounded CLI output.
+- **0.4.2** — **Settings are editable from the Web UI** (drive folder, sync
+  interval, automatic-name prefix, the four keep-counts) with a **Save settings**
+  button. Changes are written to the add-on's own configuration through the
+  Supervisor — so they survive a restart and match the Configuration tab — *and*
+  applied to the running process immediately, so **no restart is needed**. Invalid
+  values are rejected with a message. `backup_password` stays out of the panel by
+  design.
+- **0.4.1** — **Restore no longer OOM-kills the add-on**: the archive was read
+  entirely into memory (~10 GB for a 4.9 GB backup) and is now streamed.
+  **`log_level: notice`/`trace`/`fatal` crash-looped the add-on** — those values
+  were offered but not implemented. A failed Proton listing no longer looks like
+  "empty folder" (which re-uploaded every backup and wrecked date-based
+  retention), and a **partial upload can no longer be mistaken for a good backup**
+  — the remote **size** must match before a backup counts as mirrored, so a
+  truncated copy can never justify deleting the last local one. Security: path
+  traversal via the delete/restore name, stored XSS via crafted backup names, and
+  the backup password being handed to the CLI process are all fixed. Stale staged
+  archives are swept at boot (they could fill the host disk), a free-space check
+  runs before each download, large backups no longer report a false "Backup
+  creation failed", and the status page makes ~92% fewer CLI calls. Base image
+  Alpine 3.24 with Node pinned to 24.
 - **0.4.0** — **Split retention into two independent buckets: automatic vs app**,
   classified **by name** (a name starting with "Automatic backup" is *automatic*;
   everything else is *app*). Previously a single total per side let a burst of
