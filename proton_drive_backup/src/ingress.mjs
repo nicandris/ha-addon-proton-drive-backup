@@ -49,14 +49,24 @@ function scheduleSummary() {
     return `Every ${hours} hour${hours === 1 ? '' : 's'} (+ boot)`;
 }
 
-async function buildStatus() {
-    const status = orchestrator.getStatus();
+// --- Expensive-lookup cache -------------------------------------------------
+// Each /api/status poll used to spawn the ~110 MB `proton-drive` binary TWICE
+// (isConnected + list) and hit the Supervisor twice — every 5 s, per open browser
+// tab. Those results barely change, and the churn competed with running uploads
+// and risked Proton rate-limiting. They're now cached behind a short TTL, while
+// the live bits (syncing/activity/progress/lastError) always come from memory so
+// the progress indicator stays responsive. Any action invalidates the cache.
+const SNAPSHOT_TTL_MS = 30000;
+let snapshot = null; // { at, connected, backups, backupsError, stats }
+let snapshotInFlight = null; // dedupes concurrent polls (e.g. two tabs at once)
+
+/** Drop the cache so the next poll re-reads live state (call after any action). */
+function invalidateSnapshot() {
+    snapshot = null;
+}
+
+async function buildSnapshot() {
     const connected = await cli.isConnected();
-    state.connected = connected;
-    if (connected) {
-        state.loginUrl = null;
-        state.loginError = null;
-    }
 
     let backups = [];
     let backupsError = null;
@@ -67,10 +77,62 @@ async function buildStatus() {
             backupsError = err.message;
         }
     }
+    const stats = await buildStats(backups);
+    return { at: Date.now(), connected, backups, backupsError, stats };
+}
 
-    // Backup statistics (best-effort — never let a stats failure break status).
-    // Mirror model: "In Home Assistant" counts ALL HA backups; "In Proton Drive"
-    // counts the mirrored ones.
+async function getSnapshot() {
+    if (snapshot && Date.now() - snapshot.at < SNAPSHOT_TTL_MS) return snapshot;
+    if (snapshotInFlight) return snapshotInFlight;
+    snapshotInFlight = buildSnapshot()
+        .then((s) => { snapshot = s; return s; })
+        .finally(() => { snapshotInFlight = null; });
+    return snapshotInFlight;
+}
+
+async function buildStatus() {
+    const status = orchestrator.getStatus();
+    const snap = await getSnapshot();
+    const { connected, backups, backupsError, stats } = snap;
+    state.connected = connected;
+    if (connected) {
+        state.loginUrl = null;
+        state.loginError = null;
+    }
+
+    const statusLabel = connected
+        ? 'connected'
+        : (state.loginInProgress || state.loginUrl)
+          ? 'awaiting sign-in'
+          : 'disconnected';
+
+    return {
+        status: statusLabel,
+        connected,
+        needsLogin: !connected,
+        loginUrl: state.loginUrl,
+        loginInProgress: state.loginInProgress,
+        loginError: state.loginError,
+        logLevel: getLogLevel(),
+        schedule: scheduleSummary(),
+        settings: orchestrator.getConfig(),
+        lastSync: status.lastSync,
+        lastError: status.lastError || backupsError,
+        nextSyncEpoch: status.nextSyncEpoch,
+        syncing: status.syncing,
+        activity: status.activity,
+        progress: status.progress,
+        stats,
+        backups,
+    };
+}
+
+/**
+ * Backup statistics (best-effort — never let a stats failure break status).
+ * Mirror model: "In Home Assistant" counts ALL HA backups; "In Proton Drive"
+ * counts the mirrored ones. Part of the cached snapshot (hits the Supervisor).
+ */
+async function buildStats(backups) {
     let stats = null;
     try {
         const haBackups = await supervisor.listBackups();
@@ -100,32 +162,7 @@ async function buildStatus() {
     } catch (err) {
         console.debug(`[ingress] stats: ${err.message}`);
     }
-
-    const statusLabel = connected
-        ? 'connected'
-        : (state.loginInProgress || state.loginUrl)
-          ? 'awaiting sign-in'
-          : 'disconnected';
-
-    return {
-        status: statusLabel,
-        connected,
-        needsLogin: !connected,
-        loginUrl: state.loginUrl,
-        loginInProgress: state.loginInProgress,
-        loginError: state.loginError,
-        logLevel: getLogLevel(),
-        schedule: scheduleSummary(),
-        settings: orchestrator.getConfig(),
-        lastSync: status.lastSync,
-        lastError: status.lastError || backupsError,
-        nextSyncEpoch: status.nextSyncEpoch,
-        syncing: status.syncing,
-        activity: status.activity,
-        progress: status.progress,
-        stats,
-        backups,
-    };
+    return stats;
 }
 
 function renderPage() {
@@ -357,10 +394,22 @@ async function refresh() {
     }).join('');
     tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', decodeURIComponent(btn.dataset.name), 'Restore this backup to Home Assistant?'); }; });
     tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', decodeURIComponent(btn.dataset.name), 'Delete this backup from Proton Drive?'); }; });
+    scheduleNextPoll(s);
   } catch (e) {
     document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + e + '</span>';
+    scheduleNextPoll(null);
   }
 }
+// Poll fast only while something is actually happening; the server caches the
+// expensive lookups anyway, so idle tabs shouldn't hammer it.
+var pollTimer = null;
+function scheduleNextPoll(s) {
+  var busy = !!(s && (s.syncing || s.loginInProgress || s.loginUrl));
+  var delay = document.hidden ? 60000 : (busy ? 5000 : 20000);
+  clearTimeout(pollTimer);
+  pollTimer = setTimeout(refresh, delay);
+}
+document.addEventListener('visibilitychange', function(){ if (!document.hidden) refresh(); });
 async function act(path, name, confirmMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   try {
@@ -427,7 +476,6 @@ async function changeLogLevel(level) {
   } catch (e) { /* level resets on next refresh if this fails */ }
 }
 refresh();
-setInterval(refresh, 5000);
 </script>
 </body>
 </html>`;
@@ -500,7 +548,10 @@ async function handle(req, res) {
                 if (result.ok) {
                     state.connected = true;
                     console.log('[ingress] Sign-in complete — connected');
-                    orchestrator.runSync().catch((err) => console.error(`[ingress] post-login sync: ${err.message}`));
+                    invalidateSnapshot();
+                    orchestrator.runSync()
+                        .catch((err) => console.error(`[ingress] post-login sync: ${err.message}`))
+                        .finally(invalidateSnapshot);
                 } else {
                     state.loginError = result.error;
                     console.error(`[ingress] Sign-in failed: ${result.error}`);
@@ -522,6 +573,7 @@ async function handle(req, res) {
         } catch (err) {
             console.error(`[ingress] logout: ${err.message}`);
         }
+        invalidateSnapshot();
         state.connected = false;
         state.loginUrl = null;
         state.loginInProgress = false;
@@ -531,7 +583,10 @@ async function handle(req, res) {
     }
 
     if (method === 'POST' && path === '/api/create-backup') {
-        orchestrator.createBackupNow().catch((err) => console.error(`[ingress] create-backup: ${err.message}`));
+        invalidateSnapshot();
+        orchestrator.createBackupNow()
+            .catch((err) => console.error(`[ingress] create-backup: ${err.message}`))
+            .finally(invalidateSnapshot);
         sendJson(res, 200, { started: true });
         return;
     }
@@ -545,7 +600,10 @@ async function handle(req, res) {
     if (method === 'POST' && path === '/api/sync-now') {
         // Upload existing HA backups now. Kick off but don't block the response
         // on full completion.
-        orchestrator.runSync(true).catch((err) => console.error(`[ingress] sync-now: ${err.message}`));
+        invalidateSnapshot();
+        orchestrator.runSync(true)
+            .catch((err) => console.error(`[ingress] sync-now: ${err.message}`))
+            .finally(invalidateSnapshot);
         sendJson(res, 200, { ok: true });
         return;
     }
@@ -555,6 +613,7 @@ async function handle(req, res) {
         // but only ones confirmed present in Proton. Await so the UI can report.
         try {
             const result = await orchestrator.pruneHALocalNow();
+            invalidateSnapshot();
             sendJson(res, 200, { ok: true, ...result });
         } catch (err) {
             sendJson(res, 500, { ok: false, error: err.message });
@@ -567,6 +626,7 @@ async function handle(req, res) {
         if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
         try {
             const result = await orchestrator.restoreToHA(body.name);
+            invalidateSnapshot();
             sendJson(res, 200, { ok: true, ...result });
         } catch (err) {
             sendJson(res, 500, { ok: false, error: err.message });
@@ -579,6 +639,7 @@ async function handle(req, res) {
         if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
         try {
             await orchestrator.deleteProtonBackup(body.name);
+            invalidateSnapshot();
             sendJson(res, 200, { ok: true });
         } catch (err) {
             sendJson(res, 500, { ok: false, error: err.message });
