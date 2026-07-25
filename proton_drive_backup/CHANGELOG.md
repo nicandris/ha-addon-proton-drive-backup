@@ -1,5 +1,120 @@
 # Changelog
 
+## 0.4.3
+
+Follow-ups from the code review (the remaining medium-severity items).
+
+### Fixed
+
+- **Retention could delete the wrong backup when Proton reported no timestamp.**
+  Ordering fell back to "epoch 0" for any entry without a date, so "keep the newest
+  N" silently became "keep whichever N were listed first". Dates are now taken from
+  Home Assistant (authoritative — a re-upload rewrites the remote timestamp), and
+  an entry whose date still can't be established is **never pruned**; it just
+  occupies a keep slot, and a warning says how many were held back.
+- **A non-English Home Assistant broke the automatic/app split.** Backups were
+  classified by the literal prefix "Automatic backup", so on a localised install
+  every scheduled backup landed in the *app* bucket and was pruned against
+  `keep_app_*`. New **`automatic_name_prefix`** option (editable in the Web UI,
+  default `Automatic backup`), and the sync now warns when no backup matches it.
+- **Clean up local backups now reports what actually happened.** The counts came
+  from the plan before deleting, and failures incremented nothing, so it could say
+  "Deleted 3" when none succeeded. Deleted / failed / skipped are counted
+  separately now, from one shared planner (so the numbers can't drift from the
+  decision).
+- **Only the last error was visible.** A sync with several failed uploads
+  overwrote a single slot; a short error history is kept instead. **Clear** now
+  also clears the listing and sign-in errors, which previously came straight back
+  on the next poll and made the button look broken.
+- **Long-running CLI output no longer grows without bound** — a multi-GB upload or
+  a five-minute sign-in could accumulate unlimited progress output in memory; only
+  the head and tail are kept.
+
+## 0.4.2
+
+- **Settings are now editable from the Web UI.** The Settings card became a small
+  form — drive folder, sync interval, the automatic-name prefix and the four
+  keep-counts — with a **Save settings** button. Changes are written to the add-on's
+  own configuration through the Supervisor (so they survive a restart and match
+  what the Configuration tab shows) *and* applied to the running process
+  immediately, so **no restart is needed**. Invalid values are rejected with a
+  message instead of being applied. `backup_password` stays out of the panel by
+  design — change it in the Configuration tab.
+
+## 0.4.1
+
+Reliability, safety and security fixes from a full code review. No option changes.
+
+### Fixed
+
+- **Restoring a large backup could get the app killed.** The archive was read into
+  memory before being handed to Home Assistant (a 4.9 GB backup allocated ~5 GB and
+  was OOM-killed); it is now streamed, so memory stays flat regardless of size
+  (measured: 103 MB peak on a 3 GB backup).
+- **Picking `notice`, `trace` or `fatal` as the log level crash-looped the app.**
+  The Configuration dropdown offers Home Assistant's seven log levels, but only
+  four were implemented and anything else threw during start-up. The extra values
+  now map onto the four (`trace`→debug, `notice`→info, `fatal`→error), and an
+  unrecognised value logs a warning and falls back to `info` instead of exiting.
+- **A failed Proton listing no longer looks like "your Drive folder is empty".**
+  If `filesystem list` failed (expired session, transient error, unparseable
+  output) the sync treated it as an empty folder and re-uploaded **every** backup
+  with "replace" — tens of GB, and it reset every remote timestamp, which is what
+  Proton retention sorts by. The sync and retention paths now fail loudly and stop.
+- **A partial upload can no longer be mistaken for a good backup.** A remote file
+  was trusted purely because its name contained the backup's `(slug)`. An upload
+  interrupted after the file appeared therefore counted as "safely offsite": the
+  next sync skipped it, and **Clean up local backups** could delete the last good
+  local copy. A remote copy is now only accepted when its **size** matches the
+  Home Assistant backup's size; a mismatch (or a missing size on either side) is
+  re-uploaded and is **never** accepted as a reason to delete a local backup.
+- **"Backup creation failed: fetch failed" on a backup that actually succeeded.**
+  Create-backup and restore calls hit Node's fixed ~5-minute HTTP header timeout
+  while Home Assistant was still working, so a multi-GB backup reported failure
+  (and its upload to Proton was skipped) even though HA completed it. Those two
+  calls now wait as long as HA needs.
+- **The Web UI showed "Idle" during a restore.** A restore now takes the same
+  single-operation lock as a sync and reports its step ("Restoring … downloading
+  from Proton Drive"), so it can't overlap with a sync and is visible while it
+  runs. Starting a restore returns immediately and progress/errors appear in the
+  status card (as for **Sync now**) instead of the browser waiting minutes.
+- **Leftover staged archives are cleaned up on start.** Stopping the app
+  mid-transfer left a multi-GB temp `.tar` behind forever; those are now deleted at
+  start-up (with a log line saying how much was reclaimed). Before each download
+  the app also checks there is enough free space and skips that backup with a clear
+  error instead of filling the disk. The unused legacy `/data/tmp` directory is no
+  longer created.
+- **A Proton "does not exist" error is no longer read as success** when creating
+  the Drive folder.
+- **A port conflict now logs a clear message** instead of an unhandled crash.
+
+### Security
+
+- **Stored cross-site-scripting in the Web UI.** Backup names, error text and
+  statistics were injected into the page without escaping, so a backup named like
+  an HTML tag could execute script in the ingress panel. All server-provided text
+  is now escaped.
+- **Path traversal via the backup name.** The delete and restore endpoints passed
+  the supplied name straight into a Drive path and a local file path, so a crafted
+  `../…` name could act outside the Drive folder and delete files inside the
+  container. Only plain `*.tar` filenames are accepted now (rejected with a 400).
+- **The Proton CLI no longer receives the app's whole environment** (which
+  includes your `backup_password` and the Supervisor token) — only the variables
+  the CLI itself needs.
+- **Proton's raw listing payload is no longer logged.** Debug logs contained
+  internal node/revision ids and hashes; they now log only the file names and
+  sizes the app actually uses.
+
+### Changed
+
+- **The Web UI is much cheaper to leave open.** Status is served from a 30-second
+  cache instead of spawning the Proton CLI twice per poll per browser tab, and the
+  page polls adaptively (5 s while something is happening, 20 s idle, 60 s when the
+  tab is hidden).
+- Container base image updated (Alpine 3.24) with the **Node major pinned to 24**.
+- Dead code removed (unused backup-info call, unused config fields, a duplicated
+  config reader) and the developer docs corrected.
+
 ## 0.4.0
 
 - **Split retention into two independent buckets: AUTOMATIC vs APP.** Home

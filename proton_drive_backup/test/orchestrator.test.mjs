@@ -318,6 +318,7 @@ test('getConfig returns effective config with password only as a boolean', async
         process.env.KEEP_APP_IN_PROTON = '3';
         process.env.KEEP_AUTOMATIC_IN_HA = '2';
         process.env.KEEP_APP_IN_HA = '0';
+        process.env.AUTOMATIC_NAME_PREFIX = 'Automatic backup';
         process.env.BACKUP_PASSWORD = 'super-secret';
         delete process.env.STAGING_DIR;
         const c = o.getConfig();
@@ -328,6 +329,7 @@ test('getConfig returns effective config with password only as a boolean', async
             keepAppInProton: 3,
             keepAutomaticInHA: 2,
             keepAppInHA: 0,
+            automaticNamePrefix: 'Automatic backup',
             backupPasswordSet: true,
             stagingDir: null,
         });
@@ -337,7 +339,7 @@ test('getConfig returns effective config with password only as a boolean', async
         delete process.env.BACKUP_PASSWORD;
         assert.equal(o.getConfig().backupPasswordSet, false);
     } finally {
-        for (const k of ['DRIVE_FOLDER', 'BACKUP_INTERVAL_HOURS', 'KEEP_AUTOMATIC_IN_PROTON', 'KEEP_APP_IN_PROTON', 'KEEP_AUTOMATIC_IN_HA', 'KEEP_APP_IN_HA', 'BACKUP_PASSWORD', 'STAGING_DIR']) {
+        for (const k of ['DRIVE_FOLDER', 'BACKUP_INTERVAL_HOURS', 'KEEP_AUTOMATIC_IN_PROTON', 'KEEP_APP_IN_PROTON', 'KEEP_AUTOMATIC_IN_HA', 'KEEP_APP_IN_HA', 'AUTOMATIC_NAME_PREFIX', 'BACKUP_PASSWORD', 'STAGING_DIR']) {
             if (k in saved) process.env[k] = saved[k]; else delete process.env[k];
         }
     }
@@ -386,4 +388,66 @@ test('validateSettingsPatch rejects a non-object or empty patch', () => {
     assert.throws(() => o.validateSettingsPatch(null), /must be an object/);
     assert.throws(() => o.validateSettingsPatch([]), /must be an object/);
     assert.throws(() => o.validateSettingsPatch({}), /no settings supplied/);
+});
+
+// --- 0.4.3: date resolution, bucket counts, prune planning ------------------
+
+test('withResolvedDates prefers the HA date, keeps the Proton date otherwise', () => {
+    const entries = [
+        { name: 'Automatic backup 1 (s1).tar', date: '2020-01-01T00:00:00.000Z' },
+        { name: 'Automatic backup 2 (s2).tar' },
+        { name: 'Stray file (sX).tar', date: '2021-05-05T00:00:00.000Z' },
+    ];
+    const ha = [{ slug: 's1', date: '2026-07-01T00:00:00.000Z' }, { slug: 's2', date: '2026-07-02T00:00:00.000Z' }];
+    const out = o.withResolvedDates(entries, ha);
+    assert.equal(out[0].date, '2026-07-01T00:00:00.000Z'); // HA wins
+    assert.equal(out[1].date, '2026-07-02T00:00:00.000Z'); // filled in
+    assert.equal(out[2].date, '2021-05-05T00:00:00.000Z'); // untouched
+});
+
+test('selectProtonToPrune never prunes entries with no usable date', () => {
+    const entries = [
+        { name: 'Automatic backup a (s1).tar' },                                  // undated
+        { name: 'Automatic backup b (s2).tar', date: '2026-07-01T00:00:00.000Z' },
+        { name: 'Automatic backup c (s3).tar', date: '2026-07-02T00:00:00.000Z' },
+    ];
+    // keep 1: the undated one occupies the slot, so only the OLDER dated one goes.
+    const pruned = o.selectProtonToPrune(entries, 1, 0);
+    assert.ok(!pruned.includes('Automatic backup a (s1).tar'), 'undated must never be pruned');
+    assert.deepEqual(pruned.sort(), ['Automatic backup b (s2).tar', 'Automatic backup c (s3).tar']);
+});
+
+test('selectProtonToPrune with all-undated entries prunes nothing', () => {
+    const entries = [{ name: 'Automatic backup a (s1).tar' }, { name: 'Automatic backup b (s2).tar' }];
+    assert.deepEqual(o.selectProtonToPrune(entries, 1, 1), []);
+});
+
+test('bucketCounts splits by the automatic prefix', () => {
+    const ha = [
+        { slug: 'a', name: 'Automatic backup 2026.7.3' },
+        { slug: 'b', name: 'Matter Server 8.0.0' },
+        { slug: 'c', name: 'Automatic backup 2026.7.2' },
+    ];
+    assert.deepEqual(o.bucketCounts(ha), { automatic: 2, app: 1, total: 3 });
+    assert.deepEqual(o.bucketCounts([]), { automatic: 0, app: 0, total: 0 });
+});
+
+test('isAutomaticBackup honours a custom prefix (non-English HA)', () => {
+    assert.equal(o.isAutomaticBackup('Automatische Sicherung 1', 'Automatische Sicherung'), true);
+    assert.equal(o.isAutomaticBackup('Automatic backup 1', 'Automatische Sicherung'), false);
+    assert.equal(o.isAutomaticBackup('anything', ''), false); // empty prefix matches nothing
+});
+
+test('planHALocalPrune reports candidates, deletions and skips consistently', () => {
+    const ha = [
+        { slug: 'auto-old', name: 'Automatic backup 1', date: '2026-07-01T00:00:00.000Z' },
+        { slug: 'auto-mid', name: 'Automatic backup 2', date: '2026-07-02T00:00:00.000Z' },
+        { slug: 'auto-new', name: 'Automatic backup 3', date: '2026-07-03T00:00:00.000Z' },
+    ];
+    const plan = o.planHALocalPrune(ha, new Set(['auto-mid']), 1, 0);
+    assert.deepEqual(plan.candidates.map((b) => b.slug), ['auto-old', 'auto-mid']);
+    assert.deepEqual(plan.toDelete, ['auto-mid']); // auto-old isn't mirrored
+    assert.equal(plan.skippedNotInProton, 1);
+    // selectHALocalToPrune must stay consistent with the planner.
+    assert.deepEqual(o.selectHALocalToPrune(ha, new Set(['auto-mid']), 1, 0), plan.toDelete);
 });
