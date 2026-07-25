@@ -165,6 +165,20 @@ async function buildStats(backups) {
     return stats;
 }
 
+/**
+ * Home Assistant's stock DARK values. Interpolated into the page twice — once
+ * under `@media (prefers-color-scheme: dark)` for "Auto", and once under
+ * `:root[data-theme="dark"]` for an explicit choice — so the two can never drift.
+ */
+const DARK_PALETTE = `      --primary-background-color: #111111;
+      --card-background-color: #1c1c1c;
+      --secondary-background-color: #282828;
+      --primary-text-color: #e1e1e1;
+      --secondary-text-color: #9b9b9b;
+      --disabled-text-color: #6f6f6f;
+      --divider-color: rgba(225, 225, 225, 0.12);
+      --shadow-color: rgba(0, 0, 0, 0.48);`;
+
 export function renderPage() {
     return `<!DOCTYPE html>
 <html lang="en">
@@ -173,14 +187,13 @@ export function renderPage() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Proton Drive Backup</title>
 <style>
-  /* Home Assistant's own palette, so the panel matches the rest of HA.
-     Values are HA's stock light/dark themes, taken from the frontend's
+  /* palette:start — Home Assistant's own colours, so the panel matches the rest
+     of HA. Values are HA's stock light/dark themes from the frontend's
      resources/theme/color/color.globals.ts. They are declared here with HA's own
      variable NAMES because CSS custom properties do NOT cross an ingress iframe
-     boundary — HA's vars aren't visible in this document, so we can't inherit
-     them. Keeping the names identical means a future step can simply emit a
-     different :root block (e.g. the user's custom theme read from Core) with no
-     other changes. */
+     boundary — HA's vars aren't visible in this document, so we cannot inherit
+     them. Identical names mean a future step can emit a different :root block
+     (e.g. the user's custom theme read from Core) without touching any rule. */
   :root {
     --primary-color: #009ac7;
     --accent-color: #ff9800;
@@ -199,18 +212,17 @@ export function renderPage() {
     --info-color: #039be5;
     --ha-card-border-radius: 12px;
   }
+  /* "Auto": follow the browser/OS appearance — unless the user forced Light. */
   @media (prefers-color-scheme: dark) {
-    :root {
-      --primary-background-color: #111111;
-      --card-background-color: #1c1c1c;
-      --secondary-background-color: #282828;
-      --primary-text-color: #e1e1e1;
-      --secondary-text-color: #9b9b9b;
-      --disabled-text-color: #6f6f6f;
-      --divider-color: rgba(225, 225, 225, 0.12);
-      --shadow-color: rgba(0, 0, 0, 0.48);
+    :root:not([data-theme="light"]) {
+${DARK_PALETTE}
     }
   }
+  /* Explicit choice from the Theme selector (beats the media query). */
+  :root[data-theme="dark"] {
+${DARK_PALETTE}
+  }
+  /* palette:end */
 
   body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: var(--primary-background-color); color: var(--primary-text-color); }
   h1 { font-size: 1.4rem; }
@@ -300,6 +312,23 @@ function esc(v) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+// --- Appearance -------------------------------------------------------------
+// A per-browser preference (not add-on config): Auto follows the OS/HA appearance,
+// Light/Dark force it via a data-theme attribute the CSS overrides key off.
+var THEME_KEY = 'pdbTheme';
+function currentTheme() {
+  try { return localStorage.getItem(THEME_KEY) || 'auto'; } catch (e) { return 'auto'; }
+}
+function applyTheme(v) {
+  if (v === 'light' || v === 'dark') document.documentElement.setAttribute('data-theme', v);
+  else document.documentElement.removeAttribute('data-theme');
+}
+function setTheme(v) {
+  try { localStorage.setItem(THEME_KEY, v); } catch (e) { /* private mode: session-only */ }
+  applyTheme(v);
+}
+applyTheme(currentTheme());
+
 function fmtSize(bytes) {
   if (bytes == null) return '';
   var n = Number(bytes);
@@ -334,6 +363,13 @@ async function refresh() {
       '<div class="row"><span>Schedule</span><span>' + esc(s.schedule || '') + '</span></div>' +
       '<div class="row"><span>Last sync</span><span>' + esc(s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
       '<div class="row"><span>Next sync</span><span>' + esc(next) + '</span></div>' +
+      '<div class="row"><span>Appearance</span><span>' +
+        '<select id="themeSel" onchange="setTheme(this.value)">' +
+        [['auto', 'Auto (match HA)'], ['light', 'Light'], ['dark', 'Dark']].map(function(o){
+          return '<option value="' + o[0] + '"' + (currentTheme() === o[0] ? ' selected' : '') + '>' + o[1] + '</option>';
+        }).join('') +
+        '</select>' +
+      '</span></div>' +
       '<div class="row"><span>Log level</span><span>' +
         '<select id="logLevel" onchange="changeLogLevel(this.value)">' +
         (s.logLevels || ['error','warning','info','debug']).map(function(l){ return '<option value="'+esc(l)+'"'+(s.logLevel===l?' selected':'')+'>'+esc(l)+'</option>'; }).join('') +

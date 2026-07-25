@@ -7,6 +7,10 @@
 
 ## Latest release highlights
 
+- **0.4.6** — **Appearance selector (Auto / Light / Dark)** in the status card;
+  *Auto* keeps following Home Assistant. Remembered per browser and applied before
+  the first paint.
+
 - **0.4.5** — The panel now uses **Home Assistant's own colour palette** (stock
   light + dark: backgrounds, cards, text, dividers, semantic colours, HA blue
   accent, HA card radius) so it no longer looks foreign next to HA. Declared with
