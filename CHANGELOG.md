@@ -7,6 +7,11 @@
 
 ## Latest release highlights
 
+- **0.4.4** — **Fixes the Web UI being stuck on "Loading…"** in 0.4.3: a bad
+  newline escape broke the page's JavaScript, so nothing rendered. The tests now
+  compile the rendered page like a browser does, so this class of bug can't ship
+  again.
+
 - **0.4.3** — Retention no longer risks deleting the wrong backup when Proton
   reports **no timestamp**: dates come from Home Assistant (authoritative), and an
   entry whose date can't be established is **never pruned**. New
