@@ -599,3 +599,31 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
 | "Backup creation failed: fetch failed" but HA shows the backup | undici's 300 s headers timeout on `background:false`; those calls use `node:http` now (§7). |
 | Staging dir grows / host disk fills | Archives left by a stop mid-transfer. `cleanStagingDir()` sweeps them at boot; a free-space check precedes each download (§6). |
 | Web UI shows "Idle" during a restore | Pre-0.4.1: `restoreToHA` took no guard and published no activity (§3, §6). |
+
+## Deliberate decisions (reviewed, not oversights)
+
+### `hassio_role: manager` is required — don't narrow it to `backup`
+The add-on calls more than the backup endpoints:
+
+| Endpoint | Why |
+| --- | --- |
+| `GET /backups`, `POST /backups/new/full`, `GET /backups/{slug}/download`, `POST /backups/new/upload`, `DELETE /backups/{slug}`, `POST /backups/{slug}/restore/full` | mirror, create-on-demand, restore, clean-up |
+| `GET /host/info` | free-disk figure in the statistics card |
+| `GET /addons/self/info`, `POST /addons/self/options` | the Web UI's editable settings (0.4.2) |
+
+The narrower `backup` role covers only the first row, so dropping to it would break
+the statistics card and settings saving. `manager` stays, and this table is the
+justification — re-check it if those features change.
+
+### The CLI timeout kills the process, not the process group
+`protonCli.run()` uses `child.kill('SIGKILL')` on timeout. Killing a whole process
+*group* would require spawning with `detached: true`, which makes the child survive
+the add-on's own exit — trading a theoretical orphan for a guaranteed one on every
+stop. `proton-drive` is a single statically-linked binary that doesn't fork worker
+processes, so the group kill buys nothing here. Revisit only if the CLI starts
+spawning children.
+
+### `STAGING_DIR` is an env-only override, not a `config.yaml` option
+An add-on cannot `map:` an arbitrary host path, so surfacing it in the HA UI would
+only invite values that can't work. It stays an advanced escape hatch, and the
+panel shows it read-only when set.

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.4.8
+
+### Fixed
+
+- **"Clean up local backups" was broken since 0.4.3** — it failed immediately with
+  an internal error (`ours is not defined`) and deleted nothing. A leftover
+  reference from the 0.4.3 refactor; found by the new tests described below.
+
+### Changed
+
+- **Much wider test coverage** (111 tests, up from 85). The sync/restore/clean-up
+  flows, which had *no* tests at all, are now covered end to end with in-memory
+  doubles: uploads only what's missing, skips a backup Home Assistant no longer
+  serves, aborts instead of re-uploading everything when a listing fails, refuses
+  to delete a local backup whose remote copy is the wrong size, never runs two
+  operations at once, and leaves no staged files behind. Every Web UI endpoint is
+  now tested too (including the rejection of odd backup names and invalid
+  settings), which is how the clean-up bug above surfaced.
+- Documented three reviewed decisions: why the add-on needs the `manager` role,
+  why the CLI timeout doesn't kill a process group, and why `STAGING_DIR` is an
+  advanced env-only override.
+
+### Security
+
+- Documented that a Home Assistant **full backup contains the Proton sign-in
+  session** (the CLI stores it under the add-on's `/data`, which full backups
+  include). Set a `backup_password` and treat those archives as sensitive; use
+  **Disconnect** to invalidate a leaked session.
+
 ## 0.4.7
 
 - **The panel now opens instantly.** Opening it used to block on two Proton CLI

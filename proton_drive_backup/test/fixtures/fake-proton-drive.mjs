@@ -52,6 +52,16 @@ if (env.FAKE_DUMP_ENV) {
     process.exit(0);
 }
 
+// Emit FAKE_BIG_STDOUT bytes of chatter — simulates the real CLI's progress
+// output on a long upload, which used to accumulate unbounded in memory.
+if (env.FAKE_BIG_STDOUT) {
+    const total = parseInt(env.FAKE_BIG_STDOUT, 10);
+    const chunk = 'progress '.repeat(1000);
+    let sent = 0;
+    while (sent < total) { process.stdout.write(chunk); sent += chunk.length; }
+    process.exit(code('FAKE_EXIT', 0));
+}
+
 // Generic escape hatch for run()-level tests.
 if (env.FAKE_STDOUT) out(env.FAKE_STDOUT);
 if (env.FAKE_STDERR) err(env.FAKE_STDERR);

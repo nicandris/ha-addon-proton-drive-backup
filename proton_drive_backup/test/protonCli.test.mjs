@@ -299,3 +299,17 @@ test('uploadFile/downloadPath/trash resolve on success', async () => {
     await cli.downloadPath('/my-files/f/x.tar', '/tmp');
     await cli.trash('/my-files/f/x.tar');
 });
+
+test('run() caps captured output so a long upload cannot grow memory', async () => {
+    clearFake();
+    // ~2 MB of chatter; the wrapper keeps only a head+tail window.
+    process.env.FAKE_BIG_STDOUT = String(2 * 1024 * 1024);
+    const res = await cli.run(['noisy'], { timeoutMs: 30000 });
+    assert.equal(res.code, 0);
+    assert.ok(res.stdout.length < 300 * 1024,
+        `stdout not capped: ${res.stdout.length} bytes`);
+    assert.match(res.stdout, /output truncated/);
+    // The head and tail are both retained (useful for diagnosing).
+    assert.match(res.stdout.slice(0, 200), /progress/);
+    assert.match(res.stdout.slice(-200), /progress/);
+});

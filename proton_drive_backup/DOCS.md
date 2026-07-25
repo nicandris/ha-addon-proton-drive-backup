@@ -142,6 +142,15 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 
 ## Security
 
+> **A Home Assistant backup contains your Proton session.** The Proton CLI keeps
+> its sign-in session in the add-on's `/data` directory, and Home Assistant's
+> *full* backups include add-on data — so any full backup (including the copies
+> this add-on uploads) carries a **usable Proton Drive session token**. Treat those
+> archives as sensitive: set a `backup_password` so they are encrypted, and be
+> careful where you copy them. If an archive leaks, use **Disconnect** in the
+> panel (or sign the session out from your Proton account) to invalidate it.
+
+
 **What is protected:**
 
 - Communication with Proton is over HTTPS.
