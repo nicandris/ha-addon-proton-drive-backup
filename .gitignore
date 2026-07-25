@@ -27,3 +27,6 @@ out/
 
 # Local assistant guidance — not part of the published add-on
 CLAUDE.md
+
+# Internal planning/design notes — not part of the published add-on
+docs/
