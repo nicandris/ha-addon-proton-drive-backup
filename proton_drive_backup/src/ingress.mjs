@@ -16,14 +16,14 @@ import { createServer } from 'node:http';
 import * as cli from './protonCli.mjs';
 import * as orchestrator from './orchestrator.mjs';
 import * as supervisor from './supervisor.mjs';
-import { getLogLevel, setLogLevel } from './logger.mjs';
+import { getLogLevel, logLevels, setLogLevelStrict } from './logger.mjs';
 
-// UI-facing login state. connected is refreshed from the CLI on each status poll.
+// UI-facing login state. The live connection state is not kept here — it comes
+// from the cached snapshot (cli.isConnected()) on every status poll.
 const state = {
     loginUrl: null, // sign-in URL from the CLI, shown to the user
     loginInProgress: false, // an auth login child is running
     loginError: null, // last sign-in failure text
-    connected: false, // last-observed CLI session state
 };
 
 async function readBody(req) {
@@ -44,7 +44,7 @@ function sendJson(res, status, obj) {
 }
 
 function scheduleSummary() {
-    const hours = parseInt(process.env.BACKUP_INTERVAL_HOURS || '0', 10) || 0;
+    const hours = orchestrator.getConfig().intervalHours;
     if (hours <= 0) return 'On boot + manual only';
     return `Every ${hours} hour${hours === 1 ? '' : 's'} (+ boot)`;
 }
@@ -94,7 +94,6 @@ async function buildStatus() {
     const status = orchestrator.getStatus();
     const snap = await getSnapshot();
     const { connected, backups, backupsError, stats } = snap;
-    state.connected = connected;
     if (connected) {
         state.loginUrl = null;
         state.loginError = null;
@@ -114,6 +113,7 @@ async function buildStatus() {
         loginInProgress: state.loginInProgress,
         loginError: state.loginError,
         logLevel: getLogLevel(),
+        logLevels: logLevels(), // the internal levels the dropdown offers
         schedule: scheduleSummary(),
         settings: orchestrator.getConfig(),
         lastSync: status.lastSync,
@@ -260,6 +260,15 @@ function renderPage() {
   </table>
 </div>
 <script>
+// EVERY piece of server-provided text goes through esc() before it reaches
+// innerHTML: backup names, CLI stderr in lastError, and exception text are all
+// attacker-influencable (a backup literally named "<img src=x onerror=…>" used
+// to execute in this iframe on every poll).
+function esc(v) {
+  return String(v == null ? '' : v).replace(/[&<>"']/g, function(c){
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
 function fmtSize(bytes) {
   if (bytes == null) return '';
   var n = Number(bytes);
@@ -287,19 +296,19 @@ async function refresh() {
     }
     document.getElementById('statusCard').innerHTML =
       '<div class="statusline">' +
-        '<span class="badge ' + (s.connected ? 'badge-ok' : 'badge-bad') + '"><span class="dot"></span>' + s.status + '</span>' +
-        '<span class="badge ' + (syncing ? 'badge-sync' : 'badge-idle') + '">' + (syncing ? '<span class="spinner"></span>' : '') + activity + '</span>' +
+        '<span class="badge ' + (s.connected ? 'badge-ok' : 'badge-bad') + '"><span class="dot"></span>' + esc(s.status) + '</span>' +
+        '<span class="badge ' + (syncing ? 'badge-sync' : 'badge-idle') + '">' + (syncing ? '<span class="spinner"></span>' : '') + esc(activity) + '</span>' +
       '</div>' +
       progressHtml +
-      '<div class="row"><span>Schedule</span><span>' + (s.schedule || '') + '</span></div>' +
-      '<div class="row"><span>Last sync</span><span>' + (s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
-      '<div class="row"><span>Next sync</span><span>' + next + '</span></div>' +
+      '<div class="row"><span>Schedule</span><span>' + esc(s.schedule || '') + '</span></div>' +
+      '<div class="row"><span>Last sync</span><span>' + esc(s.lastSync ? new Date(s.lastSync).toLocaleString() : 'never') + '</span></div>' +
+      '<div class="row"><span>Next sync</span><span>' + esc(next) + '</span></div>' +
       '<div class="row"><span>Log level</span><span>' +
         '<select id="logLevel" onchange="changeLogLevel(this.value)">' +
-        ['error','warning','info','debug'].map(function(l){ return '<option value="'+l+'"'+(s.logLevel===l?' selected':'')+'>'+l+'</option>'; }).join('') +
+        (s.logLevels || ['error','warning','info','debug']).map(function(l){ return '<option value="'+esc(l)+'"'+(s.logLevel===l?' selected':'')+'>'+esc(l)+'</option>'; }).join('') +
         '</select>' +
       '</span></div>' +
-      (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + s.lastError + ' <button class="ghost" style="padding:.1rem .5rem;font-size:.75rem" onclick="clearErr()">Clear</button></span></div>' : '');
+      (s.lastError ? '<div class="row"><span>Last error</span><span class="err">' + esc(s.lastError) + ' <button class="ghost" style="padding:.1rem .5rem;font-size:.75rem" onclick="clearErr()">Clear</button></span></div>' : '');
 
     var syncBtn = document.getElementById('syncNow');
     syncBtn.disabled = syncing;
@@ -330,14 +339,14 @@ async function refresh() {
       statsCard.style.display = 'block';
       statsCard.innerHTML =
         '<h2 style="font-size:1.1rem;margin-top:0">Backup statistics</h2>' +
-        '<div class="row"><span>In Home Assistant</span><span>' + (haBuckets || st.haCount) + ' (' + fmtSize(st.haSizeBytes) + ')</span></div>' +
-        '<div class="row"><span>In Proton Drive</span><span>' + (protonBuckets || st.protonCount) + ' (' + fmtSize(st.protonSizeBytes) + ')</span></div>' +
+        '<div class="row"><span>In Home Assistant</span><span>' + esc(haBuckets || st.haCount) + ' (' + esc(fmtSize(st.haSizeBytes)) + ')</span></div>' +
+        '<div class="row"><span>In Proton Drive</span><span>' + esc(protonBuckets || st.protonCount) + ' (' + esc(fmtSize(st.protonSizeBytes)) + ')</span></div>' +
         (st.hostDiskFreeBytes != null
-          ? '<div class="row"><span>Host disk free</span><span>' + fmtSize(st.hostDiskFreeBytes) +
-            (st.hostDiskTotalBytes ? ' / ' + fmtSize(st.hostDiskTotalBytes) : '') + '</span></div>'
+          ? '<div class="row"><span>Host disk free</span><span>' + esc(fmtSize(st.hostDiskFreeBytes)) +
+            (st.hostDiskTotalBytes ? ' / ' + esc(fmtSize(st.hostDiskTotalBytes)) : '') + '</span></div>'
           : '') +
-        '<div class="row"><span>Last backup</span><span>' + (st.lastBackup ? new Date(st.lastBackup).toLocaleString() : '—') + '</span></div>' +
-        '<div class="row"><span>Next sync</span><span>' + next + '</span></div>';
+        '<div class="row"><span>Last backup</span><span>' + esc(st.lastBackup ? new Date(st.lastBackup).toLocaleString() : '—') + '</span></div>' +
+        '<div class="row"><span>Next sync</span><span>' + esc(next) + '</span></div>';
     } else {
       statsCard.style.display = 'none';
     }
@@ -350,14 +359,14 @@ async function refresh() {
       settingsCard.style.display = 'block';
       settingsCard.innerHTML =
         '<h2 style="font-size:1.1rem;margin-top:0">Settings</h2>' +
-        '<div class="row"><span>Drive folder</span><span>' + (cfg.driveFolder || '') + '</span></div>' +
-        '<div class="row"><span>Sync interval</span><span>' + (s.schedule || '') + '</span></div>' +
-        '<div class="row"><span>Keep automatic in Proton</span><span>' + protonKeep(cfg.keepAutomaticInProton) + '</span></div>' +
-        '<div class="row"><span>Keep app in Proton</span><span>' + protonKeep(cfg.keepAppInProton) + '</span></div>' +
-        '<div class="row"><span>Keep automatic in HA (manual cleanup)</span><span>' + haKeep(cfg.keepAutomaticInHA) + '</span></div>' +
-        '<div class="row"><span>Keep app in HA (manual cleanup)</span><span>' + haKeep(cfg.keepAppInHA) + '</span></div>' +
+        '<div class="row"><span>Drive folder</span><span>' + esc(cfg.driveFolder || '') + '</span></div>' +
+        '<div class="row"><span>Sync interval</span><span>' + esc(s.schedule || '') + '</span></div>' +
+        '<div class="row"><span>Keep automatic in Proton</span><span>' + esc(protonKeep(cfg.keepAutomaticInProton)) + '</span></div>' +
+        '<div class="row"><span>Keep app in Proton</span><span>' + esc(protonKeep(cfg.keepAppInProton)) + '</span></div>' +
+        '<div class="row"><span>Keep automatic in HA (manual cleanup)</span><span>' + esc(haKeep(cfg.keepAutomaticInHA)) + '</span></div>' +
+        '<div class="row"><span>Keep app in HA (manual cleanup)</span><span>' + esc(haKeep(cfg.keepAppInHA)) + '</span></div>' +
         '<div class="row"><span>Backup password</span><span>' + (cfg.backupPasswordSet ? 'Set' : 'Not set') + '</span></div>' +
-        (cfg.stagingDir ? '<div class="row"><span>Staging dir</span><span>' + cfg.stagingDir + '</span></div>' : '');
+        (cfg.stagingDir ? '<div class="row"><span>Staging dir (STAGING_DIR env override)</span><span>' + esc(cfg.stagingDir) + '</span></div>' : '');
     } else {
       settingsCard.style.display = 'none';
     }
@@ -384,19 +393,21 @@ async function refresh() {
     var tbody = document.getElementById('backupRows');
     if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
     tbody.innerHTML = rows.map(function(b){
-      return '<tr><td>' + (b.date ? new Date(b.date).toLocaleString() : '') + '</td>' +
-        '<td>' + (b.name || '') + '</td>' +
-        '<td>' + fmtSize(b.size) + '</td>' +
+      return '<tr><td>' + esc(b.date ? new Date(b.date).toLocaleString() : '') + '</td>' +
+        '<td>' + esc(b.name || '') + '</td>' +
+        '<td>' + esc(fmtSize(b.size)) + '</td>' +
         '<td class="actions">' +
           '<button class="restore" data-name="' + encodeURIComponent(b.name) + '">Restore</button>' +
           '<button class="delete" data-name="' + encodeURIComponent(b.name) + '">Delete</button>' +
         '</td></tr>';
     }).join('');
-    tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', decodeURIComponent(btn.dataset.name), 'Restore this backup to Home Assistant?'); }; });
+    tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', decodeURIComponent(btn.dataset.name),
+      'Restore this backup to Home Assistant?\n\nThe download + restore runs in the background and can take a long time; progress and any error appear in the status card above.',
+      'Restore started. Watch the status card above for progress; Home Assistant will restart when it finishes.'); }; });
     tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', decodeURIComponent(btn.dataset.name), 'Delete this backup from Proton Drive?'); }; });
     scheduleNextPoll(s);
   } catch (e) {
-    document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + e + '</span>';
+    document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + esc(e && e.message ? e.message : e) + '</span>';
     scheduleNextPoll(null);
   }
 }
@@ -410,12 +421,13 @@ function scheduleNextPoll(s) {
   pollTimer = setTimeout(refresh, delay);
 }
 document.addEventListener('visibilitychange', function(){ if (!document.hidden) refresh(); });
-async function act(path, name, confirmMsg) {
+async function act(path, name, confirmMsg, startedMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   try {
     var r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name }) });
     var j = await r.json();
     if (!j.ok) alert('Error: ' + (j.error || 'unknown'));
+    else if (startedMsg) alert(startedMsg);
   } catch (e) { alert('Error: ' + e); }
   refresh();
 }
@@ -491,6 +503,18 @@ export function startIngressServer() {
         });
     });
 
+    // Without this, a listen failure surfaces as an unhandled 'error' event that
+    // kills the process with a bare stack trace.
+    server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            console.error(`[ingress] Port ${port} is already in use — another process (or a second copy of this add-on) holds it. The Web UI cannot start.`);
+        } else if (err.code === 'EACCES') {
+            console.error(`[ingress] Not permitted to bind port ${port} (EACCES). The Web UI cannot start.`);
+        } else {
+            console.error(`[ingress] HTTP server error (${err.code || 'unknown'}): ${err.message}`);
+        }
+    });
+
     server.listen(port, () => {
         console.log(`[ingress] Listening on port ${port}`);
     });
@@ -522,7 +546,9 @@ async function handle(req, res) {
     if (method === 'POST' && path === '/api/log-level') {
         const body = await readBody(req);
         try {
-            setLogLevel(body.level);
+            // Strict here (unlike boot): garbage from the API is a 400, not a
+            // silent fallback to info.
+            setLogLevelStrict(body.level);
             sendJson(res, 200, { ok: true, level: getLogLevel() });
         } catch (err) {
             sendJson(res, 400, { ok: false, error: err.message });
@@ -546,7 +572,6 @@ async function handle(req, res) {
                 state.loginInProgress = false;
                 state.loginUrl = null;
                 if (result.ok) {
-                    state.connected = true;
                     console.log('[ingress] Sign-in complete — connected');
                     invalidateSnapshot();
                     orchestrator.runSync()
@@ -574,7 +599,6 @@ async function handle(req, res) {
             console.error(`[ingress] logout: ${err.message}`);
         }
         invalidateSnapshot();
-        state.connected = false;
         state.loginUrl = null;
         state.loginInProgress = false;
         state.loginError = null;
@@ -624,19 +648,26 @@ async function handle(req, res) {
     if (method === 'POST' && path === '/api/restore') {
         const body = await readBody(req);
         if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
-        try {
-            const result = await orchestrator.restoreToHA(body.name);
-            invalidateSnapshot();
-            sendJson(res, 200, { ok: true, ...result });
-        } catch (err) {
-            sendJson(res, 500, { ok: false, error: err.message });
+        if (!orchestrator.isValidRemoteName(body.name)) {
+            return sendJson(res, 400, { ok: false, error: 'invalid backup name (must be a plain .tar filename)' });
         }
+        // Fire-and-forget like /api/sync-now: a restore downloads a multi-GB
+        // archive and blocks HA for minutes, far longer than an HTTP response
+        // should wait. Progress/errors surface via /api/status.
+        invalidateSnapshot();
+        orchestrator.restoreToHA(body.name)
+            .catch((err) => console.error(`[ingress] restore: ${err.message}`))
+            .finally(invalidateSnapshot);
+        sendJson(res, 200, { ok: true, started: true });
         return;
     }
 
     if (method === 'POST' && path === '/api/delete') {
         const body = await readBody(req);
         if (!body.name) return sendJson(res, 400, { ok: false, error: 'name required' });
+        if (!orchestrator.isValidRemoteName(body.name)) {
+            return sendJson(res, 400, { ok: false, error: 'invalid backup name (must be a plain .tar filename)' });
+        }
         try {
             await orchestrator.deleteProtonBackup(body.name);
             invalidateSnapshot();

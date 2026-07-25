@@ -210,6 +210,77 @@ test('list() returns [] on a nonzero exit (e.g. not logged in)', async () => {
     assert.deepEqual(await cli.list('/my-files/x'), []);
 });
 
+// --- H3: strict vs lenient list. A false-empty listing must not look like
+// "nothing is mirrored" to the sync path (that re-uploaded everything). ---
+
+test('listStrict() THROWS on a nonzero exit instead of returning []', async () => {
+    clearFake();
+    process.env.FAKE_LIST_CODE = '1';
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /list "\/my-files\/x" failed.*login/is);
+    await assert.rejects(() => cli.list('/my-files/x', { strict: true }), /failed/);
+});
+
+test('listStrict() THROWS on unparseable output and on a non-array shape', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = 'not json at all {';
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /JSON parse failed/);
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify({ meta: 1, nested: { a: 2 } }); // no array anywhere
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /no recognisable array/);
+});
+
+test('listStrict() returns the parsed entries on success (incl. a genuinely empty folder)', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([{ name: { ok: true, value: 'a (s1).tar' }, activeRevision: { ok: true, value: { claimedSize: 7 } } }]);
+    const r = await cli.listStrict('/my-files/x');
+    assert.deepEqual(r.map((e) => [e.name, e.size]), [['a (s1).tar', 7]]);
+    clearFake();
+    process.env.FAKE_LIST_JSON = '[]'; // empty folder is NOT an error
+    assert.deepEqual(await cli.listStrict('/my-files/x'), []);
+});
+
+// --- L7: "does not exist" must not be read as an "already exists" success ---
+
+test('ensureFolder treats "already exists" as success but NOT "does not exist"', async () => {
+    clearFake();
+    process.env.FAKE_CREATE_CODE = '1';
+    process.env.FAKE_CREATE_MSG = 'a node with that name already exists';
+    process.env.FAKE_INFO_CODE = '0'; // verification passes
+    assert.equal(await cli.ensureFolder('/my-files/Backups'), '/my-files/Backups');
+
+    clearFake();
+    process.env.FAKE_CREATE_CODE = '1';
+    process.env.FAKE_CREATE_MSG = 'parent folder does not exist';
+    await assert.rejects(() => cli.ensureFolder('/my-files/Backups'), /does not exist/);
+
+    clearFake();
+    process.env.FAKE_CREATE_CODE = '1';
+    process.env.FAKE_CREATE_MSG = 'no such file or directory';
+    await assert.rejects(() => cli.ensureFolder('/my-files/Backups'), /no such file/);
+});
+
+// --- L4: the third-party binary must not receive the add-on's secrets ---
+
+test('the CLI child gets a filtered env (no BACKUP_PASSWORD / SUPERVISOR_TOKEN)', async () => {
+    clearFake();
+    process.env.BACKUP_PASSWORD = 'super-secret';
+    process.env.SUPERVISOR_TOKEN = 'tok-123';
+    process.env.PROTON_DRIVE_CREDENTIALS_STORE = 'unsafe_file';
+    try {
+        process.env.FAKE_DUMP_ENV = '1';
+        const res = await cli.run(['dump-env']);
+        const seen = res.stdout.split('\n').filter(Boolean);
+        assert.ok(!seen.includes('BACKUP_PASSWORD'), 'BACKUP_PASSWORD must not reach the CLI');
+        assert.ok(!seen.includes('SUPERVISOR_TOKEN'), 'SUPERVISOR_TOKEN must not reach the CLI');
+        assert.ok(seen.includes('PROTON_DRIVE_CREDENTIALS_STORE'), 'the CLI still needs its own settings');
+        assert.ok(seen.includes('PATH'), 'PATH is still passed through');
+        assert.ok(!res.stdout.includes('super-secret'));
+    } finally {
+        delete process.env.BACKUP_PASSWORD;
+        delete process.env.SUPERVISOR_TOKEN;
+    }
+});
+
 // --- upload/download/trash throw on failure, resolve on success ---
 
 test('uploadFile/downloadPath/trash throw with stderr on nonzero exit', async () => {

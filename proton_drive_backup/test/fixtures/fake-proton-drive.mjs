@@ -46,6 +46,12 @@ if (a[0] === 'filesystem') {
     }
 }
 
+// Print the env var NAMES we were given, one per line (env-filtering test).
+if (env.FAKE_DUMP_ENV) {
+    out(Object.keys(env).join('\n'));
+    process.exit(0);
+}
+
 // Generic escape hatch for run()-level tests.
 if (env.FAKE_STDOUT) out(env.FAKE_STDOUT);
 if (env.FAKE_STDERR) err(env.FAKE_STDERR);
