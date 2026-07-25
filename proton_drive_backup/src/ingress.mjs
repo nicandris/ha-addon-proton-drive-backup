@@ -173,59 +173,87 @@ export function renderPage() {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Proton Drive Backup</title>
 <style>
-  body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: #f5f6f8; color: #1c1c1c; }
+  /* Home Assistant's own palette, so the panel matches the rest of HA.
+     Values are HA's stock light/dark themes, taken from the frontend's
+     resources/theme/color/color.globals.ts. They are declared here with HA's own
+     variable NAMES because CSS custom properties do NOT cross an ingress iframe
+     boundary — HA's vars aren't visible in this document, so we can't inherit
+     them. Keeping the names identical means a future step can simply emit a
+     different :root block (e.g. the user's custom theme read from Core) with no
+     other changes. */
+  :root {
+    --primary-color: #009ac7;
+    --accent-color: #ff9800;
+    --primary-background-color: #fafafa;
+    --secondary-background-color: #e5e5e5;
+    --card-background-color: #ffffff;
+    --primary-text-color: #212121;
+    --secondary-text-color: #727272;
+    --disabled-text-color: #bdbdbd;
+    --text-primary-color: #ffffff;
+    --divider-color: rgba(0, 0, 0, 0.12);
+    --shadow-color: rgba(0, 0, 0, 0.16);
+    --error-color: #db4437;
+    --warning-color: #ffa600;
+    --success-color: #43a047;
+    --info-color: #039be5;
+    --ha-card-border-radius: 12px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --primary-background-color: #111111;
+      --card-background-color: #1c1c1c;
+      --secondary-background-color: #282828;
+      --primary-text-color: #e1e1e1;
+      --secondary-text-color: #9b9b9b;
+      --disabled-text-color: #6f6f6f;
+      --divider-color: rgba(225, 225, 225, 0.12);
+      --shadow-color: rgba(0, 0, 0, 0.48);
+    }
+  }
+
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1.5rem; background: var(--primary-background-color); color: var(--primary-text-color); }
   h1 { font-size: 1.4rem; }
-  .card { background: #fff; border-radius: 8px; padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  h2 { color: var(--primary-text-color); }
+  .card { background: var(--card-background-color); border-radius: var(--ha-card-border-radius); padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px var(--shadow-color); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
   .grid > .card { margin-bottom: 0; }
   @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
-  .row { display: flex; justify-content: space-between; padding: .25rem 0; }
-  .row span:first-child { color: #666; }
-  .ok { color: #2e7d32; font-weight: 600; }
-  .bad { color: #c62828; font-weight: 600; }
-  button { cursor: pointer; border: none; border-radius: 6px; padding: .45rem .8rem; font-size: .85rem; }
-  .primary { background: #6d4aff; color: #fff; }
-  .restore { background: #1976d2; color: #fff; }
-  .delete { background: #c62828; color: #fff; }
-  .ghost { background: #eee; color: #333; }
+  .row { display: flex; justify-content: space-between; gap: 1rem; padding: .25rem 0; }
+  .row span:first-child { color: var(--secondary-text-color); }
+  .ok { color: var(--success-color); font-weight: 600; }
+  .bad { color: var(--error-color); font-weight: 600; }
+  button { cursor: pointer; border: none; border-radius: 6px; padding: .45rem .8rem; font-size: .85rem; font-family: inherit; }
+  button:disabled { opacity: .6; cursor: default; }
+  .primary { background: var(--primary-color); color: var(--text-primary-color); }
+  .restore { background: var(--info-color); color: var(--text-primary-color); }
+  .delete { background: var(--error-color); color: var(--text-primary-color); }
+  .ghost { background: var(--secondary-background-color); color: var(--primary-text-color); }
   table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid #eee; font-size: .9rem; word-break: break-all; }
-  .err { color: #c62828; white-space: pre-wrap; }
+  th, td { text-align: left; padding: .5rem .4rem; border-bottom: 1px solid var(--divider-color); font-size: .9rem; word-break: break-all; }
+  th { color: var(--secondary-text-color); font-weight: 600; }
+  .err { color: var(--error-color); white-space: pre-wrap; }
   .actions button { margin-right: .35rem; }
-  select { font-size: .85rem; border: 1px solid #ccc; border-radius: 4px; padding: .15rem .35rem; background: #fff; cursor: pointer; }
-  .signin-link { display: inline-block; margin: .5rem 0; padding: .6rem .9rem; background: #6d4aff; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; word-break: break-all; }
-  .hint { color: #666; margin: .25rem 0 .5rem; }
-  input.setting { font-size: .85rem; padding: .2rem .4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: inherit; max-width: 14rem; }
+  select, input.setting { font-size: .85rem; font-family: inherit; border: 1px solid var(--divider-color); border-radius: 4px; padding: .2rem .4rem; background: var(--card-background-color); color: var(--primary-text-color); cursor: pointer; }
+  input.setting { max-width: 14rem; cursor: text; }
   input.setting[type=number] { max-width: 6rem; text-align: right; }
+  .signin-link { display: inline-block; margin: .5rem 0; padding: .6rem .9rem; background: var(--primary-color); color: var(--text-primary-color); border-radius: 6px; text-decoration: none; font-weight: 600; word-break: break-all; }
+  .hint { color: var(--secondary-text-color); margin: .25rem 0 .5rem; }
   .statusline { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .6rem; }
   .badge { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem .65rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
-  .badge-ok { background: #e6f4ea; color: #2e7d32; }
-  .badge-bad { background: #fdecea; color: #c62828; }
-  .badge-sync { background: #ede7ff; color: #6d4aff; }
-  .badge-idle { background: #eee; color: #666; }
+  /* Tinted pills: a translucent wash of the semantic colour reads correctly on
+     both HA's light (#fafafa) and dark (#111) backgrounds. */
+  .badge-ok { background: rgba(67, 160, 71, .16); color: var(--success-color); }
+  .badge-bad { background: rgba(219, 68, 55, .16); color: var(--error-color); }
+  .badge-sync { background: rgba(0, 154, 199, .16); color: var(--primary-color); }
+  .badge-idle { background: var(--secondary-background-color); color: var(--secondary-text-color); }
   .dot { width: .55rem; height: .55rem; border-radius: 50%; background: currentColor; display: inline-block; }
-  .spinner { width: .8rem; height: .8rem; border: 2px solid rgba(109,74,255,.3); border-top-color: #6d4aff; border-radius: 50%; display: inline-block; animation: spin .8s linear infinite; }
+  .spinner { width: .8rem; height: .8rem; border: 2px solid rgba(0, 154, 199, .3); border-top-color: var(--primary-color); border-radius: 50%; display: inline-block; animation: spin .8s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-  .progress { height: .5rem; background: #eee; border-radius: 999px; overflow: hidden; margin: 0 0 .6rem; }
-  .progress-bar { height: 100%; background: #6d4aff; border-radius: 999px; transition: width .3s ease; }
+  .progress { height: .5rem; background: var(--secondary-background-color); border-radius: 999px; overflow: hidden; margin: 0 0 .6rem; }
+  .progress-bar { height: 100%; background: var(--primary-color); border-radius: 999px; transition: width .3s ease; }
   .progress-indet { width: 40%; animation: indet 1.2s ease-in-out infinite; }
   @keyframes indet { 0% { margin-left: -40%; } 100% { margin-left: 100%; } }
-  @media (prefers-color-scheme: dark) {
-    body { background: #1a1c1e; color: #e3e3e3; }
-    .card { background: #242628; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
-    .row span:first-child, .hint { color: #9aa0a6; }
-    .ok { color: #5bd075; }
-    .bad, .err { color: #ff6b6b; }
-    .ghost { background: #37393c; color: #e3e3e3; }
-    th, td { border-bottom-color: #37393c; }
-    select { background: #2c2e30; color: #e3e3e3; border-color: #4a4d50; }
-    input.setting { background: #2c2e30; color: #e3e3e3; border-color: #4a4d50; }
-    .badge-ok { background: #12341c; color: #5bd075; }
-    .badge-bad { background: #3a1414; color: #ff6b6b; }
-    .badge-sync { background: #2a2350; color: #b3a4ff; }
-    .badge-idle { background: #333; color: #aaa; }
-    .progress { background: #37393c; }
-  }
 </style>
 </head>
 <body>

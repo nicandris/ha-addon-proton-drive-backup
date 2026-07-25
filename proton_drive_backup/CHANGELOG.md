@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.5
+
+### Changed
+
+- **The panel now uses Home Assistant's own colour palette**, so it matches the
+  rest of HA instead of its own ad-hoc colours: HA's stock light and dark values
+  for backgrounds, cards, text, dividers and the semantic (error/success/info)
+  colours, with HA's blue as the accent for buttons and progress. Cards also pick
+  up HA's corner radius.
+
+  *Note:* the panel runs in an ingress **iframe**, and CSS variables do not cross
+  an iframe boundary — HA's theme variables are not visible inside this document,
+  so they can't simply be inherited. The palette is therefore declared locally
+  **using HA's own variable names**, which means following a *custom* theme later
+  only requires supplying different values, not touching any styling.
+
 ## 0.4.4
 
 ### Fixed
