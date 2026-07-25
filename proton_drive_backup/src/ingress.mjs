@@ -374,6 +374,7 @@ async function refresh() {
           num('setKeepAppProton', 'Keep app in Proton', cfg.keepAppInProton, '0 = all') +
           num('setKeepAutoHA', 'Keep automatic in HA', cfg.keepAutomaticInHA, '0 = off') +
           num('setKeepAppHA', 'Keep app in HA', cfg.keepAppInHA, '0 = off') +
+          '<div class="row"><span>Automatic backup name prefix</span><span><input class="setting" id="setAutoPrefix" type="text" value="' + esc(cfg.automaticNamePrefix || '') + '"></span></div>' +
           '<div class="row"><span>Backup password</span><span>' + (cfg.backupPasswordSet ? 'Set' : 'Not set') +
             ' <em style="opacity:.7">(change in the Configuration tab)</em></span></div>' +
           (cfg.stagingDir ? '<div class="row"><span>Staging dir (STAGING_DIR env)</span><span>' + esc(cfg.stagingDir) + '</span></div>' : '') +
@@ -502,6 +503,7 @@ async function saveSettings() {
     keepAppInProton: document.getElementById('setKeepAppProton').value,
     keepAutomaticInHA: document.getElementById('setKeepAutoHA').value,
     keepAppInHA: document.getElementById('setKeepAppHA').value,
+    automaticNamePrefix: document.getElementById('setAutoPrefix').value,
   };
   btn.disabled = true; msg.textContent = 'saving…';
   try {
@@ -668,6 +670,10 @@ async function handle(req, res) {
 
     if (method === 'POST' && path === '/api/clear-error') {
         orchestrator.clearError();
+        // These live here, not in the orchestrator — without clearing them the
+        // error reappeared on the next poll and the button looked broken.
+        state.loginError = null;
+        invalidateSnapshot();
         sendJson(res, 200, { ok: true });
         return;
     }
