@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.9
+
+### Security
+
+- **Your Proton sign-in is no longer copied into Home Assistant backups.** The
+  Proton CLI keeps its session under the add-on's `/data`, and HA full backups
+  include add-on data — so until now **every** backup (including the ones this
+  add-on uploads to Proton) contained a **usable Proton Drive session token**. The
+  session store is now excluded from backups (`backup_exclude`), so an archive can
+  no longer hand over access to your Drive.
+  *Trade-off:* restoring a backup no longer restores the Proton session — press
+  **Connect** once after a restore. That is deliberate: a backup should not carry a
+  live credential.
+- **The session files are no longer world-readable.** The CLI writes them `0644`
+  in a `0755` directory; they are now tightened to `0600` inside a `0700`
+  directory, at start-up and again after each sign-in (a fresh login rewrites them
+  with the default mode). Best-effort — a permissions failure never stops the
+  add-on.
+
+If you're worried an older backup leaked, press **Disconnect** in the panel (or
+remove the session from your Proton account) to invalidate that token.
+
 ## 0.4.8
 
 ### Fixed

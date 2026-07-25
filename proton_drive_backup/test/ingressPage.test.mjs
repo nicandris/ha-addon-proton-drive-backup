@@ -97,3 +97,12 @@ test('the page shows progress while the first status is still unknown', () => {
     // Poll fast while pending so the fill-in feels immediate.
     assert.match(scripts[0], /s\.pending \? 1200/);
 });
+
+test('the Proton session is excluded from Home Assistant backups', async () => {
+    // Without backup_exclude, every HA full backup (including the ones this add-on
+    // uploads) would contain a usable Proton session token.
+    const { readFile } = await import('node:fs/promises');
+    const cfg = await readFile(new URL('../config.yaml', import.meta.url), 'utf8');
+    assert.match(cfg, /^backup_exclude:/m, 'config.yaml has no backup_exclude');
+    assert.match(cfg, /proton-drive-cli/, 'the session store is not excluded');
+});

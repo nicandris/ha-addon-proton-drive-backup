@@ -313,3 +313,58 @@ test('run() caps captured output so a long upload cannot grow memory', async () 
     assert.match(res.stdout.slice(0, 200), /progress/);
     assert.match(res.stdout.slice(-200), /progress/);
 });
+
+// --- session store hardening -------------------------------------------------
+
+test('secureSessionStore narrows the CLI\'s world-readable session files to 0600/0700', async () => {
+    const { mkdtemp, writeFile, chmod, stat, mkdir } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const saved = process.env.XDG_DATA_HOME;
+    const home = await mkdtemp(join(tmpdir(), 'pdb-sess-'));
+    try {
+        process.env.XDG_DATA_HOME = home;
+        const dir = join(home, 'proton-drive-cli');
+        await mkdir(dir, { recursive: true });
+        // Exactly what the real CLI leaves behind: 0644 files in a 0755 dir.
+        await chmod(dir, 0o755);
+        for (const f of ['auth-session.json', 'clientUid.json']) {
+            await writeFile(join(dir, f), '{}');
+            await chmod(join(dir, f), 0o644);
+        }
+        const res = await cli.secureSessionStore();
+        assert.equal(res.dir, dir);
+        assert.equal(res.files, 2);
+        assert.equal(res.changed, 2);
+        assert.equal((await stat(dir)).mode & 0o777, 0o700, 'directory not restricted');
+        for (const f of ['auth-session.json', 'clientUid.json']) {
+            assert.equal((await stat(join(dir, f))).mode & 0o777, 0o600, `${f} not restricted`);
+        }
+        // Idempotent: a second run has nothing to change.
+        assert.equal((await cli.secureSessionStore()).changed, 0);
+    } finally {
+        if (saved === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = saved;
+    }
+});
+
+test('secureSessionStore never throws when the store cannot be created', async () => {
+    // Point XDG_DATA_HOME at a FILE, so mkdir fails with ENOTDIR. (Using an
+    // unwritable system path like /proc is avoided: it hangs under a sandboxed
+    // test runner rather than failing fast.)
+    const { mkdtemp, writeFile } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const saved = process.env.XDG_DATA_HOME;
+    const dir = await mkdtemp(join(tmpdir(), 'pdb-sess-bad-'));
+    const asFile = join(dir, 'not-a-directory');
+    await writeFile(asFile, 'x');
+    try {
+        process.env.XDG_DATA_HOME = asFile;
+        const res = await cli.secureSessionStore(); // must resolve, not reject
+        assert.equal(res.changed, 0);
+        assert.equal(res.files, 0);
+        assert.ok(res.dir.startsWith(asFile));
+    } finally {
+        if (saved === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = saved;
+    }
+});

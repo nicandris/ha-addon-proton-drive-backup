@@ -1,5 +1,5 @@
 name: Proton Drive Backup
-version: "0.4.8"
+version: "0.4.9"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive
@@ -7,6 +7,13 @@ arch:
   - amd64
   - aarch64
 init: false
+# The Proton CLI stores its sign-in session under /data. Home Assistant full
+# backups include an add-on's /data, so without this every backup — including the
+# ones this add-on uploads to Proton — would carry a USABLE Proton session token.
+# Excluding it means a restored backup asks you to press Connect again, which is
+# the right trade for not shipping a live credential inside every archive.
+backup_exclude:
+  - /data/proton-drive-cli/*
 hassio_api: true
 hassio_role: manager
 ingress: true

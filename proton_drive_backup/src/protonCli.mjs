@@ -17,6 +17,8 @@
  */
 
 import { spawn } from 'node:child_process';
+import { chmod, mkdir, readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 
 /** Absolute path (or bare name on $PATH) of the proton-drive binary. */
 const BIN = process.env.PROTON_DRIVE_BIN || 'proton-drive';
@@ -32,6 +34,52 @@ function capped(existing, chunk) {
     const next = existing + chunk;
     if (next.length <= CAP_BYTES * 2) return next;
     return `${next.slice(0, CAP_BYTES)}\n…[output truncated]…\n${next.slice(-CAP_BYTES)}`;
+}
+
+/**
+ * Where the CLI keeps its sign-in session (`$XDG_DATA_HOME/proton-drive-cli`,
+ * i.e. `/data/proton-drive-cli` in the add-on).
+ */
+export function sessionStoreDir() {
+    return join(process.env.XDG_DATA_HOME || '/data', 'proton-drive-cli');
+}
+
+/**
+ * Restrict the session store to the add-on's own user.
+ *
+ * The CLI creates its files world-readable (0644) in a 0755 directory. The
+ * session is a bearer credential for the whole Proton Drive account, so it is
+ * narrowed to 0600 in a 0700 directory. Called at boot and again after each
+ * sign-in, because a fresh login rewrites the files with the default mode.
+ *
+ * Best-effort: never throws — a permissions failure must not stop the add-on.
+ * @returns {Promise<{dir:string, files:number, changed:number}>}
+ */
+export async function secureSessionStore() {
+    const dir = sessionStoreDir();
+    let files = 0;
+    let changed = 0;
+    try {
+        await mkdir(dir, { recursive: true });
+        await chmod(dir, 0o700);
+        for (const name of await readdir(dir)) {
+            const p = join(dir, name);
+            try {
+                const st = await stat(p);
+                if (!st.isFile()) continue;
+                files++;
+                // Only touch it if it's actually looser than 0600.
+                if ((st.mode & 0o177) !== 0) {
+                    await chmod(p, 0o600);
+                    changed++;
+                }
+            } catch { /* file vanished mid-loop (the CLI rewrites these) */ }
+        }
+        if (changed) console.log(`[protonCli] Restricted ${changed} session file(s) in ${dir} to 0600`);
+    } catch (err) {
+        console.warn(`[protonCli] Could not restrict the session store (${err.message}) — continuing`);
+    }
+    return { dir, files, changed };
 }
 
 /** The user's Proton Drive root section that holds their own files. */
