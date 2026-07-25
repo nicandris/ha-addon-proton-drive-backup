@@ -342,3 +342,48 @@ test('getConfig returns effective config with password only as a boolean', async
         }
     }
 });
+
+// --- validateSettingsPatch (editable Web UI settings) -----------------------
+
+test('validateSettingsPatch maps keys to option + env names', () => {
+    const { options, env } = o.validateSettingsPatch({
+        driveFolder: 'backups/HA', intervalHours: '12', keepAutomaticInProton: 5,
+    });
+    assert.deepEqual(options, {
+        drive_folder: 'backups/HA', backup_interval_hours: 12, keep_automatic_in_proton: 5,
+    });
+    assert.deepEqual(env, {
+        DRIVE_FOLDER: 'backups/HA', BACKUP_INTERVAL_HOURS: '12', KEEP_AUTOMATIC_IN_PROTON: '5',
+    });
+});
+
+test('validateSettingsPatch accepts 0 for every count', () => {
+    const { options } = o.validateSettingsPatch({
+        keepAutomaticInProton: 0, keepAppInProton: 0, keepAutomaticInHA: 0, keepAppInHA: 0, intervalHours: 0,
+    });
+    assert.deepEqual(Object.values(options), [0, 0, 0, 0, 0]);
+});
+
+test('validateSettingsPatch refuses the backup password and unknown keys', () => {
+    assert.throws(() => o.validateSettingsPatch({ backupPassword: 'x' }), /not an editable setting/);
+    assert.throws(() => o.validateSettingsPatch({ backup_password: 'x' }), /not an editable setting/);
+    assert.throws(() => o.validateSettingsPatch({ stagingDir: '/tmp' }), /not an editable setting/);
+});
+
+test('validateSettingsPatch rejects bad numbers', () => {
+    for (const bad of [-1, 1.5, 'abc', '', null]) {
+        assert.throws(() => o.validateSettingsPatch({ keepAppInProton: bad }), /whole number/, `value ${bad}`);
+    }
+});
+
+test('validateSettingsPatch rejects an empty or traversing drive folder', () => {
+    assert.throws(() => o.validateSettingsPatch({ driveFolder: '   ' }), /must not be empty/);
+    assert.throws(() => o.validateSettingsPatch({ driveFolder: '/abs/path' }), /relative path/);
+    assert.throws(() => o.validateSettingsPatch({ driveFolder: 'a/../../b' }), /relative path/);
+});
+
+test('validateSettingsPatch rejects a non-object or empty patch', () => {
+    assert.throws(() => o.validateSettingsPatch(null), /must be an object/);
+    assert.throws(() => o.validateSettingsPatch([]), /must be an object/);
+    assert.throws(() => o.validateSettingsPatch({}), /no settings supplied/);
+});

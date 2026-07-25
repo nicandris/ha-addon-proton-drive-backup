@@ -138,6 +138,38 @@ export async function hostInfo() {
     return supervisorJson('GET', '/host/info');
 }
 
+/** This add-on's own info (includes `slug` and the stored `options`). */
+export async function selfInfo() {
+    return supervisorJson('GET', '/addons/self/info');
+}
+
+/**
+ * Persist (a subset of) this add-on's own options, so a change made in the Web UI
+ * survives a restart and stays in sync with HA's Configuration tab.
+ *
+ * The Supervisor merges the given keys into the stored options and validates them
+ * against `config.yaml`'s schema, so an invalid value is rejected here rather
+ * than silently applied. `self` is the documented way for an add-on to address
+ * itself; if a Supervisor build rejects it we fall back to the resolved slug.
+ *
+ * @param {Record<string, unknown>} options - only the keys being changed.
+ */
+export async function setSelfOptions(options) {
+    console.debug(`[supervisor] setSelfOptions: ${Object.keys(options).join(', ')}`);
+    try {
+        return await supervisorJson('POST', '/addons/self/options', { options });
+    } catch (err) {
+        // Fall back to the explicit slug (e.g. `a1b2c3d4_proton_drive_backup`).
+        let slug;
+        try {
+            slug = (await selfInfo())?.slug;
+        } catch { /* report the original failure below */ }
+        if (!slug) throw err;
+        console.debug(`[supervisor] setSelfOptions: retrying with slug ${slug}`);
+        return supervisorJson('POST', `/addons/${slug}/options`, { options });
+    }
+}
+
 /**
  * Create a new full Home Assistant backup (blocks until done). Returns the slug.
  * Uses the long-running transport — a multi-GB backup takes well over undici's
