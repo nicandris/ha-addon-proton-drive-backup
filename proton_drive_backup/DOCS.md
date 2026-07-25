@@ -20,7 +20,11 @@ Requires Home Assistant **OS** or **Supervised** on **amd64** or **aarch64**
    **Sync now**, the app lists **all** Home Assistant backups (automatic and
    manual) and everything already in the Proton Drive folder.
 2. Any HA backup not yet in Proton Drive is uploaded to the configured folder as
-   `<name> (<slug>).tar` (e.g. `Automatic backup 2026.7.3 (a1b2c3d4).tar`).
+   `<name> (<slug>).tar` (e.g. `Automatic backup 2026.7.3 (a1b2c3d4).tar`). A
+   backup counts as already there only if the remote file's **size** matches too,
+   so an upload that was interrupted half-way is uploaded again rather than
+   trusted. If the Proton folder can't be listed at all, the sync stops with an
+   error instead of assuming it is empty.
 3. Proton Drive is pruned automatically, in **two independent buckets**:
    `keep_automatic_in_proton` for the scheduled "Automatic backup" archives and
    `keep_app_in_proton` for everything else ("app" backups). Within each bucket
@@ -33,10 +37,10 @@ Backups are sorted into the **automatic** vs **app** bucket **by name**: any nam
 that starts with "Automatic backup" (Home Assistant's own scheduled backups) is
 *automatic*; everything else — per-add-on backups, manual snapshots — is *app*.
 
-The CLI has no metadata API, so remote backups are identified by **filename**.
-The `(slug)` suffix is the Home Assistant backup's stable, unique id — it drives
-deduplication (a backup already in Proton is never re-uploaded) and lets restore
-map a Proton file back to a backup.
+The CLI has no metadata API, so remote backups are identified by **filename**
+plus size. The `(slug)` suffix is the Home Assistant backup's stable, unique id —
+it drives deduplication (a backup already in Proton, with a matching size, is
+never re-uploaded) and lets restore map a Proton file back to a backup.
 
 ## Configuration
 
@@ -51,23 +55,29 @@ Set these on the app's **Configuration** tab, then **Save** and restart the app.
 | `keep_automatic_in_ha`  | `0`                      | Newest **automatic** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button — never automatically. `0` = keep all automatic (no local clean-up of that bucket). |
 | `keep_app_in_ha`        | `0`                      | Newest **app** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button. `0` = keep all app backups (no local clean-up of that bucket). |
 | `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty if they are not.                                 |
-| `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Can also be changed at runtime from the Web UI.                        |
+| `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Four levels exist internally, so `trace` behaves as `debug`, `notice` as `info` and `fatal` as `error`. Can also be changed at runtime from the Web UI (which offers the four internal levels).  |
 
 There is **no email / password / 2FA option** — authentication is handled by
 Proton's browser sign-in.
 
-### Optional: `STAGING_DIR` environment override
+### Staging area (and the advanced `STAGING_DIR` override)
 
 When uploading or restoring, the app stages each backup archive as a temporary
-`.tar` file. It stages this **outside `/data`** by default (in the container's
-ephemeral tmp dir), because Home Assistant full-backups include the app's
-`/data` volume — a multi-GB temp file left there would get swallowed into the
-next backup and roughly double its size. You normally never need to change this.
+`.tar` file. It stages this **outside `/data`** (in the container's ephemeral tmp
+dir), because Home Assistant full-backups include the app's `/data` volume — a
+multi-GB temp file left there would get swallowed into the next backup and roughly
+double its size.
 
-If you do need to relocate the staging area, set the `STAGING_DIR` environment
-variable to an absolute path. It is an environment override (not a
-Configuration-tab option); just make sure the path you choose is **not** part of
-any Home Assistant backup.
+Housekeeping is automatic: any archive left behind by a stop or crash mid-transfer
+is deleted the next time the app starts (it logs how much space that reclaimed),
+and before downloading a backup the app checks there is enough free space, skipping
+that backup with a clear error rather than filling the disk.
+
+`STAGING_DIR` is an **advanced, environment-only override** of that location —
+deliberately *not* a Configuration-tab option, since an app can only reach paths its
+manifest maps in. Leave it unset unless you know you need it; if you do set it (to
+an absolute path), make sure that path is **not** part of any Home Assistant
+backup. When it is set, the Web UI's Settings card shows it.
 
 ## Authentication
 
@@ -115,14 +125,18 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
   progress.
 - **Clean up local backups** — manually delete local Home Assistant backups
   beyond the newest `keep_automatic_in_ha` automatic / `keep_app_in_ha` app, but
-  **only** ones already copied to Proton Drive. It asks for confirmation and then
-  reports how many were deleted and how many were skipped because they aren't
-  mirrored yet. This is the **only** way the app deletes local backups — it never
-  does so automatically, and it will never delete a backup that isn't safely
+  **only** ones already copied to Proton Drive **and verified there by size** (a
+  partial or interrupted upload never counts as offsite). It asks for confirmation
+  and then reports how many were deleted and how many were skipped because they
+  aren't mirrored yet. This is the **only** way the app deletes local backups — it
+  never does so automatically, and it will never delete a backup that isn't safely
   offsite (in either bucket). Disabled when **both** HA keep-counts are `0`.
 - **Restore** — restore Home Assistant from one of the backups in Proton Drive.
   The app downloads the chosen archive from Proton, hands it to the Supervisor,
-  and starts a full restore.
+  and starts a full restore. This runs **in the background**: the button returns
+  straight away and the status card shows the current step ("Restoring … downloading
+  from Proton Drive", then "Home Assistant is restoring…"), so a multi-GB restore
+  never looks idle. A restore and a sync can never run at the same time.
 - **Delete** — remove a backup from Proton Drive (moves it to the Drive trash).
 - Change the **log level** at runtime.
 
@@ -163,7 +177,9 @@ by, or supported by Proton AG. It uses Proton's official, MIT-licensed
   CLI (`proton-drive` v0.6.0). The `filesystem list --json` output shape it emits
   is still evolving between CLI releases; the app parses it defensively (as of
   0.2.4 it reads the CLI's `Result`-wrapped `name` and the size at
-  `activeRevision.value.claimedSize`) and logs the raw output at debug level.
+  `activeRevision.value.claimedSize`). Debug logs list only the file names and
+  sizes the app actually uses — not Proton's raw payload, which carries internal
+  node/revision ids.
 - **Session persists in `/data`.** The CLI session is stored as a plain file in
   the app's `/data` directory via the CLI's `unsafe_file` credentials store (the
   container has no OS keyring) — see [Security](#security).
