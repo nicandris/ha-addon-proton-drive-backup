@@ -108,6 +108,86 @@ export function getConfig() {
 }
 
 /**
+ * The settings the Web UI may change, mapped to their `config.yaml` option key
+ * and the env var `cfg()` reads. `backup_password` is deliberately absent — a
+ * secret is not editable from (or readable by) the panel.
+ */
+const EDITABLE_SETTINGS = {
+    driveFolder: { option: 'drive_folder', env: 'DRIVE_FOLDER', type: 'string' },
+    intervalHours: { option: 'backup_interval_hours', env: 'BACKUP_INTERVAL_HOURS', type: 'int' },
+    keepAutomaticInProton: { option: 'keep_automatic_in_proton', env: 'KEEP_AUTOMATIC_IN_PROTON', type: 'int' },
+    keepAppInProton: { option: 'keep_app_in_proton', env: 'KEEP_APP_IN_PROTON', type: 'int' },
+    keepAutomaticInHA: { option: 'keep_automatic_in_ha', env: 'KEEP_AUTOMATIC_IN_HA', type: 'int' },
+    keepAppInHA: { option: 'keep_app_in_ha', env: 'KEEP_APP_IN_HA', type: 'int' },
+};
+
+/**
+ * Validate a settings patch from the UI and normalise it.
+ *
+ * Pure — unit-tested. Rejects unknown keys (so `backup_password` can't be slipped
+ * in), non-integers, negative counts, and an empty/́traversing drive folder.
+ *
+ * @param {Record<string, unknown>} patch
+ * @returns {{options: Record<string, string|number>, env: Record<string, string>}}
+ * @throws {Error} on any invalid field
+ */
+export function validateSettingsPatch(patch) {
+    if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('settings must be an object');
+    }
+    const options = {};
+    const env = {};
+    for (const [key, raw] of Object.entries(patch)) {
+        const spec = EDITABLE_SETTINGS[key];
+        if (!spec) throw new Error(`"${key}" is not an editable setting`);
+        if (spec.type === 'int') {
+            const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
+            if (!Number.isInteger(n) || n < 0) {
+                throw new Error(`"${key}" must be a whole number >= 0`);
+            }
+            options[spec.option] = n;
+            env[spec.env] = String(n);
+        } else {
+            const s = String(raw ?? '').trim();
+            if (!s) throw new Error(`"${key}" must not be empty`);
+            // The folder is joined into a Proton path; keep it a simple relative path.
+            if (s.startsWith('/') || s.split('/').some((seg) => seg === '..' || seg === '.')) {
+                throw new Error(`"${key}" must be a relative path without "." or ".."`);
+            }
+            options[spec.option] = s;
+            env[spec.env] = s;
+        }
+    }
+    if (Object.keys(options).length === 0) throw new Error('no settings supplied');
+    return { options, env };
+}
+
+/**
+ * Apply a settings change from the Web UI: persist it to the add-on's own options
+ * via the Supervisor (so it survives restarts and matches HA's Configuration tab)
+ * AND update this process's env so it takes effect immediately — `run.sh` only
+ * maps config→env at start-up, so without this a restart would be required.
+ *
+ * @param {Record<string, unknown>} patch
+ * @returns {Promise<ReturnType<typeof getConfig>>} the new effective config
+ */
+export async function applySettings(patch) {
+    const { options, env } = validateSettingsPatch(patch);
+    // Persist first — if the Supervisor rejects it (schema validation), nothing
+    // has changed and the error goes back to the UI.
+    await supervisor.setSelfOptions(options);
+    const folderChanged = 'DRIVE_FOLDER' in env && env.DRIVE_FOLDER !== process.env.DRIVE_FOLDER;
+    for (const [k, v] of Object.entries(env)) process.env[k] = v;
+    if (folderChanged) {
+        // Drop the resolved-folder cache so the new folder is created/looked up.
+        cachedFolderKey = null;
+        cachedFolderPath = null;
+    }
+    console.log(`[orchestrator] Settings updated: ${Object.keys(options).join(', ')}`);
+    return getConfig();
+}
+
+/**
  * Everything `main.mjs` needs at boot: the UI-safe config plus the two
  * process-level settings. Never contains the backup password (main logs the
  * whole object at debug level).
