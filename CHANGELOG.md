@@ -7,6 +7,12 @@
 
 ## Latest release highlights
 
+- **0.4.5** — The panel now uses **Home Assistant's own colour palette** (stock
+  light + dark: backgrounds, cards, text, dividers, semantic colours, HA blue
+  accent, HA card radius) so it no longer looks foreign next to HA. Declared with
+  HA's own variable names, because CSS variables can't cross the ingress iframe —
+  which also means following a custom theme later is just a values change.
+
 - **0.4.4** — **Fixes the Web UI being stuck on "Loading…"** in 0.4.3: a bad
   newline escape broke the page's JavaScript, so nothing rendered. The tests now
   compile the rendered page like a browser does, so this class of bug can't ship
