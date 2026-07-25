@@ -195,6 +195,8 @@ function renderPage() {
   select { font-size: .85rem; border: 1px solid #ccc; border-radius: 4px; padding: .15rem .35rem; background: #fff; cursor: pointer; }
   .signin-link { display: inline-block; margin: .5rem 0; padding: .6rem .9rem; background: #6d4aff; color: #fff; border-radius: 6px; text-decoration: none; font-weight: 600; word-break: break-all; }
   .hint { color: #666; margin: .25rem 0 .5rem; }
+  input.setting { font-size: .85rem; padding: .2rem .4rem; border: 1px solid #ccc; border-radius: 4px; background: #fff; color: inherit; max-width: 14rem; }
+  input.setting[type=number] { max-width: 6rem; text-align: right; }
   .statusline { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-bottom: .6rem; }
   .badge { display: inline-flex; align-items: center; gap: .35rem; padding: .25rem .65rem; border-radius: 999px; font-size: .8rem; font-weight: 600; }
   .badge-ok { background: #e6f4ea; color: #2e7d32; }
@@ -217,6 +219,7 @@ function renderPage() {
     .ghost { background: #37393c; color: #e3e3e3; }
     th, td { border-bottom-color: #37393c; }
     select { background: #2c2e30; color: #e3e3e3; border-color: #4a4d50; }
+    input.setting { background: #2c2e30; color: #e3e3e3; border-color: #4a4d50; }
     .badge-ok { background: #12341c; color: #5bd075; }
     .badge-bad { background: #3a1414; color: #ff6b6b; }
     .badge-sync { background: #2a2350; color: #b3a4ff; }
@@ -357,16 +360,30 @@ async function refresh() {
       var protonKeep = function(n){ return (n && n > 0) ? String(n) : 'all'; };
       var haKeep = function(n){ return (n && n > 0) ? String(n) : 'off'; };
       settingsCard.style.display = 'block';
-      settingsCard.innerHTML =
-        '<h2 style="font-size:1.1rem;margin-top:0">Settings</h2>' +
-        '<div class="row"><span>Drive folder</span><span>' + esc(cfg.driveFolder || '') + '</span></div>' +
-        '<div class="row"><span>Sync interval</span><span>' + esc(s.schedule || '') + '</span></div>' +
-        '<div class="row"><span>Keep automatic in Proton</span><span>' + esc(protonKeep(cfg.keepAutomaticInProton)) + '</span></div>' +
-        '<div class="row"><span>Keep app in Proton</span><span>' + esc(protonKeep(cfg.keepAppInProton)) + '</span></div>' +
-        '<div class="row"><span>Keep automatic in HA (manual cleanup)</span><span>' + esc(haKeep(cfg.keepAutomaticInHA)) + '</span></div>' +
-        '<div class="row"><span>Keep app in HA (manual cleanup)</span><span>' + esc(haKeep(cfg.keepAppInHA)) + '</span></div>' +
-        '<div class="row"><span>Backup password</span><span>' + (cfg.backupPasswordSet ? 'Set' : 'Not set') + '</span></div>' +
-        (cfg.stagingDir ? '<div class="row"><span>Staging dir (STAGING_DIR env override)</span><span>' + esc(cfg.stagingDir) + '</span></div>' : '');
+      // Don't clobber values the user is mid-edit (the poll would fight them).
+      if (!settingsDirty) {
+        var num = function(id, label, val, hint){
+          return '<div class="row"><span>' + label + (hint ? ' <em style="opacity:.7">(' + hint + ')</em>' : '') + '</span>' +
+                 '<span><input class="setting" id="' + id + '" type="number" min="0" step="1" value="' + Number(val || 0) + '"></span></div>';
+        };
+        settingsCard.innerHTML =
+          '<h2 style="font-size:1.1rem;margin-top:0">Settings</h2>' +
+          '<div class="row"><span>Drive folder</span><span><input class="setting" id="setDriveFolder" type="text" value="' + esc(cfg.driveFolder || '') + '"></span></div>' +
+          num('setInterval', 'Sync every (hours)', cfg.intervalHours, '0 = boot + manual only') +
+          num('setKeepAutoProton', 'Keep automatic in Proton', cfg.keepAutomaticInProton, '0 = all') +
+          num('setKeepAppProton', 'Keep app in Proton', cfg.keepAppInProton, '0 = all') +
+          num('setKeepAutoHA', 'Keep automatic in HA', cfg.keepAutomaticInHA, '0 = off') +
+          num('setKeepAppHA', 'Keep app in HA', cfg.keepAppInHA, '0 = off') +
+          '<div class="row"><span>Backup password</span><span>' + (cfg.backupPasswordSet ? 'Set' : 'Not set') +
+            ' <em style="opacity:.7">(change in the Configuration tab)</em></span></div>' +
+          (cfg.stagingDir ? '<div class="row"><span>Staging dir (STAGING_DIR env)</span><span>' + esc(cfg.stagingDir) + '</span></div>' : '') +
+          '<div style="margin-top:.6rem"><button class="primary" id="saveSettings">Save settings</button>' +
+          ' <span id="settingsMsg" class="hint"></span></div>';
+        settingsCard.querySelectorAll('.setting').forEach(function(el){
+          el.oninput = function(){ settingsDirty = true; document.getElementById('settingsMsg').textContent = 'unsaved changes'; };
+        });
+        document.getElementById('saveSettings').onclick = saveSettings;
+      }
     } else {
       settingsCard.style.display = 'none';
     }
@@ -474,6 +491,28 @@ document.getElementById('disconnectBtn').onclick = async function(){
   } catch (e) { alert('Error: ' + e); }
   refresh();
 };
+var settingsDirty = false;
+async function saveSettings() {
+  var btn = document.getElementById('saveSettings');
+  var msg = document.getElementById('settingsMsg');
+  var payload = {
+    driveFolder: document.getElementById('setDriveFolder').value,
+    intervalHours: document.getElementById('setInterval').value,
+    keepAutomaticInProton: document.getElementById('setKeepAutoProton').value,
+    keepAppInProton: document.getElementById('setKeepAppProton').value,
+    keepAutomaticInHA: document.getElementById('setKeepAutoHA').value,
+    keepAppInHA: document.getElementById('setKeepAppHA').value,
+  };
+  btn.disabled = true; msg.textContent = 'saving…';
+  try {
+    var r = await fetch('api/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    var j = await r.json();
+    if (!j.ok) { msg.textContent = ''; alert('Could not save: ' + (j.error || 'unknown')); }
+    else { msg.textContent = 'saved'; settingsDirty = false; }
+  } catch (e) { msg.textContent = ''; alert('Could not save: ' + e); }
+  btn.disabled = false;
+  refresh();
+}
 async function clearErr() {
   try { await fetch('api/clear-error', { method: 'POST' }); } catch (e) { /* refresh will re-show if it failed */ }
   refresh();
@@ -612,6 +651,18 @@ async function handle(req, res) {
             .catch((err) => console.error(`[ingress] create-backup: ${err.message}`))
             .finally(invalidateSnapshot);
         sendJson(res, 200, { started: true });
+        return;
+    }
+
+    if (method === 'POST' && path === '/api/settings') {
+        const body = await readBody(req);
+        try {
+            const settings = await orchestrator.applySettings(body);
+            invalidateSnapshot();
+            sendJson(res, 200, { ok: true, settings });
+        } catch (err) {
+            sendJson(res, 400, { ok: false, error: err.message });
+        }
         return;
     }
 
