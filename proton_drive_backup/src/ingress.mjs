@@ -726,6 +726,9 @@ async function handle(req, res) {
                 state.loginUrl = null;
                 if (result.ok) {
                     console.log('[ingress] Sign-in complete — connected');
+                    // A fresh login rewrites the session files with the CLI's
+                    // default 0644 — narrow them again.
+                    cli.secureSessionStore().catch(() => {});
                     invalidateSnapshot();
                     orchestrator.runSync()
                         .catch((err) => console.error(`[ingress] post-login sync: ${err.message}`))

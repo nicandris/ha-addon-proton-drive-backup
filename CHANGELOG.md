@@ -7,6 +7,12 @@
 
 ## Latest release highlights
 
+- **0.4.9** — **Security:** the Proton session is no longer included in Home
+  Assistant backups (until now every backup carried a usable Proton token), and the
+  session files are tightened from world-readable `0644` to `0600` in a `0700`
+  directory. After restoring a backup you'll press **Connect** once — deliberate,
+  so archives don't carry live credentials.
+
 - **0.4.8** — **Fixes "Clean up local backups", broken since 0.4.3** (it errored
   out and deleted nothing). Found by a big test expansion (111 tests, up from 85)
   that now covers the sync/restore/clean-up flows and every Web UI endpoint. Also

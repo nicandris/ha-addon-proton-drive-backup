@@ -13,6 +13,7 @@ import { setLogLevel } from './logger.mjs';
 
 import { startIngressServer } from './ingress.mjs';
 import { cleanStagingDir, getRuntimeConfig, runSync, setNextSyncEpoch } from './orchestrator.mjs';
+import { secureSessionStore } from './protonCli.mjs';
 
 async function main() {
     // One config source: orchestrator.getRuntimeConfig() (never carries the
@@ -33,6 +34,8 @@ async function main() {
     // Reclaim archives left behind by a stop/crash mid-transfer (staging is
     // outside /data and nothing else ever cleans it).
     console.debug(`[main] Staging dir: ${config.effectiveStagingDir}`);
+    // Narrow the Proton session files (the CLI writes them world-readable).
+    await secureSessionStore();
     await cleanStagingDir().catch((err) => console.warn(`[main] Staging clean-up failed: ${err.message}`));
 
     startIngressServer();
