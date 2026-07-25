@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.4
+
+### Fixed
+
+- **The Web UI was stuck on "Loading…" (0.4.3).** A newline escape written inside
+  the page template turned into a real line break in the browser's JavaScript, so
+  the page failed to parse (`Uncaught SyntaxError`) and never rendered — no status,
+  no statistics, no backup list. The buttons were drawn but nothing populated.
+  Fixed, and the test suite now **compiles the rendered page's script** the way a
+  browser would, so a syntax error inside the UI can no longer ship (checking the
+  server file alone could never catch it).
+
 ## 0.4.3
 
 Follow-ups from the code review (the remaining medium-severity items).

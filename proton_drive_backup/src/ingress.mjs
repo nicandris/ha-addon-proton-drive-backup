@@ -165,7 +165,7 @@ async function buildStats(backups) {
     return stats;
 }
 
-function renderPage() {
+export function renderPage() {
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -420,7 +420,7 @@ async function refresh() {
         '</td></tr>';
     }).join('');
     tbody.querySelectorAll('.restore').forEach(function(btn){ btn.onclick = function(){ act('api/restore', decodeURIComponent(btn.dataset.name),
-      'Restore this backup to Home Assistant?\n\nThe download + restore runs in the background and can take a long time; progress and any error appear in the status card above.',
+      'Restore this backup to Home Assistant?\\n\\nThe download + restore runs in the background and can take a long time; progress and any error appear in the status card above.',
       'Restore started. Watch the status card above for progress; Home Assistant will restart when it finishes.'); }; });
     tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', decodeURIComponent(btn.dataset.name), 'Delete this backup from Proton Drive?'); }; });
     scheduleNextPoll(s);
