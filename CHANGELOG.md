@@ -7,6 +7,11 @@
 
 ## Latest release highlights
 
+- **0.4.7** — **The panel opens instantly.** It no longer waits on the Proton CLI
+  and Supervisor before rendering (several seconds of "Loading…", sometimes
+  flashing "Connect" at a connected user); it renders at once and the slow parts
+  fill in behind a spinner. First response measured at 0.01 s instead of ~6–9 s.
+
 - **0.4.6** — **Appearance selector (Auto / Light / Dark)** in the status card;
   *Auto* keeps following Home Assistant. Remembered per browser and applied before
   the first paint.

@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.7
+
+- **The panel now opens instantly.** Opening it used to block on two Proton CLI
+  calls plus two Supervisor calls before anything appeared — several seconds of
+  "Loading…", and it could briefly flash **Connect to Proton Drive** at an
+  already-connected user. The page is now served immediately with everything
+  already known (settings, schedule, buttons) while the slow parts refresh in the
+  background and fill themselves in, with a **spinner** on the connection badge,
+  the statistics card and the backup list until they arrive. Measured with a
+  deliberately slow CLI: first response **0.01 s instead of ~6–9 s**.
+- The status cache is also warmed when the add-on starts, so the first visit after
+  a restart is already populated.
+
 ## 0.4.6
 
 - **Appearance selector: Auto / Light / Dark.** The panel followed your browser's

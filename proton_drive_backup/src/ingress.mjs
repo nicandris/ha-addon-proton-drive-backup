@@ -81,34 +81,64 @@ async function buildSnapshot() {
     return { at: Date.now(), connected, backups, backupsError, stats };
 }
 
-async function getSnapshot() {
-    if (snapshot && Date.now() - snapshot.at < SNAPSHOT_TTL_MS) return snapshot;
+function snapshotIsFresh() {
+    return !!snapshot && Date.now() - snapshot.at < SNAPSHOT_TTL_MS;
+}
+
+/** Kick off (or join) a snapshot refresh. Never rejects. */
+function refreshSnapshot() {
     if (snapshotInFlight) return snapshotInFlight;
     snapshotInFlight = buildSnapshot()
         .then((s) => { snapshot = s; return s; })
+        .catch((err) => { console.debug(`[ingress] snapshot refresh: ${err.message}`); return null; })
         .finally(() => { snapshotInFlight = null; });
     return snapshotInFlight;
 }
 
+/**
+ * Stale-while-revalidate: returns immediately with whatever we have (fresh, stale,
+ * or nothing) and refreshes in the background.
+ *
+ * The first status request used to AWAIT two `proton-drive` spawns plus two
+ * Supervisor calls — several seconds during which the whole page sat on
+ * "Loading…". Now the page renders at once and the slow parts fill themselves in.
+ */
+function getSnapshotNonBlocking() {
+    if (!snapshotIsFresh()) refreshSnapshot();
+    return snapshot; // may be stale, or null on the very first request
+}
+
+/** Warm the cache at boot so an early visitor doesn't wait for a cold read. */
+export function primeSnapshot() {
+    refreshSnapshot();
+}
+
 async function buildStatus() {
     const status = orchestrator.getStatus();
-    const snap = await getSnapshot();
-    const { connected, backups, backupsError, stats } = snap;
+    const snap = getSnapshotNonBlocking();
+    // `pending` = nothing known yet; the UI shows a spinner rather than guessing.
+    const pending = !snap;
+    const { connected, backups, backupsError, stats } =
+        snap || { connected: null, backups: null, backupsError: null, stats: null };
     if (connected) {
         state.loginUrl = null;
         state.loginError = null;
     }
 
-    const statusLabel = connected
-        ? 'connected'
-        : (state.loginInProgress || state.loginUrl)
-          ? 'awaiting sign-in'
-          : 'disconnected';
+    const statusLabel = pending
+        ? 'checking…'
+        : connected
+          ? 'connected'
+          : (state.loginInProgress || state.loginUrl)
+            ? 'awaiting sign-in'
+            : 'disconnected';
 
     return {
         status: statusLabel,
-        connected,
-        needsLogin: !connected,
+        pending,
+        connected: !!connected,
+        // Don't claim a login is needed before we've actually looked.
+        needsLogin: !pending && !connected,
         loginUrl: state.loginUrl,
         loginInProgress: state.loginInProgress,
         loginError: state.loginError,
@@ -123,7 +153,7 @@ async function buildStatus() {
         activity: status.activity,
         progress: status.progress,
         stats,
-        backups,
+        backups: backups || [],
     };
 }
 
@@ -356,7 +386,9 @@ async function refresh() {
     }
     document.getElementById('statusCard').innerHTML =
       '<div class="statusline">' +
-        '<span class="badge ' + (s.connected ? 'badge-ok' : 'badge-bad') + '"><span class="dot"></span>' + esc(s.status) + '</span>' +
+        (s.pending
+          ? '<span class="badge badge-idle"><span class="spinner"></span>' + esc(s.status) + '</span>'
+          : '<span class="badge ' + (s.connected ? 'badge-ok' : 'badge-bad') + '"><span class="dot"></span>' + esc(s.status) + '</span>') +
         '<span class="badge ' + (syncing ? 'badge-sync' : 'badge-idle') + '">' + (syncing ? '<span class="spinner"></span>' : '') + esc(activity) + '</span>' +
       '</div>' +
       progressHtml +
@@ -414,6 +446,12 @@ async function refresh() {
           : '') +
         '<div class="row"><span>Last backup</span><span>' + esc(st.lastBackup ? new Date(st.lastBackup).toLocaleString() : '—') + '</span></div>' +
         '<div class="row"><span>Next sync</span><span>' + esc(next) + '</span></div>';
+    } else if (s.pending) {
+      // First load: the counts need the CLI + Supervisor, so show progress
+      // instead of an empty gap.
+      statsCard.style.display = 'block';
+      statsCard.innerHTML = '<h2 style="font-size:1.1rem;margin-top:0">Backup statistics</h2>' +
+        '<div class="row"><span><span class="spinner"></span> Reading Home Assistant and Proton Drive…</span><span></span></div>';
     } else {
       statsCard.style.display = 'none';
     }
@@ -455,7 +493,9 @@ async function refresh() {
 
     // Connect / Connected cards.
     document.getElementById('connectedCard').style.display = s.connected ? 'block' : 'none';
-    document.getElementById('connectCard').style.display = s.connected ? 'none' : 'block';
+    // While pending, show neither — flashing "Connect to Proton Drive" at an
+    // already-connected user was the worst part of the slow first load.
+    document.getElementById('connectCard').style.display = (!s.connected && !s.pending) ? 'block' : 'none';
     var signinBox = document.getElementById('signinBox');
     var signinLink = document.getElementById('signinLink');
     var connectErr = document.getElementById('connectError');
@@ -473,7 +513,13 @@ async function refresh() {
 
     var rows = (s.backups || []).slice().sort(function(a,b){ return (new Date(b.date || 0)) - (new Date(a.date || 0)); });
     var tbody = document.getElementById('backupRows');
-    if (rows.length === 0) { tbody.innerHTML = '<tr><td colspan="4">No backups in Proton Drive</td></tr>'; return; }
+    if (rows.length === 0) {
+      tbody.innerHTML = s.pending
+        ? '<tr><td colspan="4"><span class="spinner"></span> Loading…</td></tr>'
+        : '<tr><td colspan="4">No backups in Proton Drive</td></tr>';
+      scheduleNextPoll(s);
+      return;
+    }
     tbody.innerHTML = rows.map(function(b){
       return '<tr><td>' + esc(b.date ? new Date(b.date).toLocaleString() : '') + '</td>' +
         '<td>' + esc(b.name || '') + '</td>' +
@@ -498,7 +544,7 @@ async function refresh() {
 var pollTimer = null;
 function scheduleNextPoll(s) {
   var busy = !!(s && (s.syncing || s.loginInProgress || s.loginUrl));
-  var delay = document.hidden ? 60000 : (busy ? 5000 : 20000);
+  var delay = document.hidden ? 60000 : (s && s.pending ? 1200 : (busy ? 5000 : 20000));
   clearTimeout(pollTimer);
   pollTimer = setTimeout(refresh, delay);
 }
@@ -622,6 +668,8 @@ export function startIngressServer() {
 
     server.listen(port, () => {
         console.log(`[ingress] Listening on port ${port}`);
+        // Warm the status cache so the first page load is instant.
+        primeSnapshot();
     });
     return server;
 }
