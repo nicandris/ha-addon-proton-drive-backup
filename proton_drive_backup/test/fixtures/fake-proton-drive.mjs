@@ -5,6 +5,8 @@
  * binary path once at import, so per-test behaviour must come from the env,
  * which run()/login() pass through to the child).
  */
+import fs from 'node:fs';
+
 const a = process.argv.slice(2);
 const env = process.env;
 const out = (s) => process.stdout.write(s + '\n');
@@ -29,8 +31,17 @@ if (a[0] === 'filesystem') {
     const sub = a[1];
     if (sub === 'info') { process.exit(code('FAKE_INFO_CODE', 0)); }
     if (sub === 'list') {
+        // Print a banner, then die by signal — what an OOM-killed CLI looks like.
+        if (env.FAKE_LIST_SIGKILL) {
+            fs.writeSync(2, '===============================================\n'); // sync: no time to flush
+            process.kill(process.pid, 'SIGKILL');
+        }
         const c = code('FAKE_LIST_CODE', 0);
-        if (c !== 0) { err('You need to login first'); process.exit(c); }
+        if (c !== 0) {
+            err(env.FAKE_LIST_STDERR ?? 'You need to login first');
+            if (env.FAKE_LIST_STDOUT) out(env.FAKE_LIST_STDOUT);
+            process.exit(c);
+        }
         out(env.FAKE_LIST_JSON ?? '[]');
         process.exit(0);
     }

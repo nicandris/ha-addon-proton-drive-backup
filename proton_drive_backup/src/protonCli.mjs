@@ -85,6 +85,24 @@ export async function secureSessionStore() {
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
 
+/**
+ * Error text from a finished run.
+ *
+ * Uses BOTH streams: the CLI prints a `====` banner line on stderr and the
+ * actual reason on stdout, so the old `stderr || stdout` reported nothing but
+ * the banner (0.4.9 — a `filesystem list` failure was undiagnosable). ANSI
+ * codes are stripped and `\r` becomes `\n`, because the CLI redraws lines and
+ * a lone `\r` hides everything before it in the add-on log.
+ *
+ * @param {{stdout:string, stderr:string}} res
+ * @param {string} [fallback] - used when both streams are empty.
+ */
+function errText(res, fallback = 'no output') {
+    // eslint-disable-next-line no-control-regex
+    const clean = (s) => String(s || '').replace(/\x1B\[[0-9;?]*[ -/]*[@-~]/g, '').replace(/\r/g, '\n').trim();
+    return [clean(res.stderr), clean(res.stdout)].filter(Boolean).join('\n') || fallback;
+}
+
 /** Env names passed through verbatim to the CLI (plus the PROTON_DRIVE_* set). */
 const ENV_ALLOW = ['PATH', 'HOME', 'TMPDIR', 'XDG_DATA_HOME', 'XDG_CONFIG_HOME'];
 
@@ -142,10 +160,15 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
             reject(err); // binary missing / not executable — a real failure
         });
 
-        child.on('close', (code) => {
+        child.on('close', (code, signal) => {
             if (timer) clearTimeout(timer);
-            const exitCode = killedByTimeout ? 124 : (code ?? 1);
+            // A signal-killed child reports code=null. Mapping that straight to 1
+            // made an OOM kill indistinguishable from an ordinary CLI error —
+            // the output just stopped mid-line and the caller reported "exit 1".
+            const exitCode = killedByTimeout ? 124 : (code ?? (signal ? 128 : 1));
             if (killedByTimeout) stderr += `\n[protonCli] killed after ${timeoutMs}ms timeout`;
+            else if (signal) stderr += `\n[protonCli] killed by ${signal}`
+                + (signal === 'SIGKILL' ? ' — most likely the out-of-memory killer, not a Proton error' : '');
             console.debug(`[protonCli] exit ${exitCode} (${BIN} ${args[0] || ''} ${args[1] || ''})`);
             resolve({ code: exitCode, stdout, stderr });
         });
@@ -216,7 +239,7 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
                 console.debug('[protonCli] login: completed OK');
                 resolve({ ok: true });
             } else {
-                const error = (stderr.trim() || stdout.trim() || `auth login exited ${code}`);
+                const error = errText({ stdout, stderr }, `auth login exited ${code}`);
                 console.debug(`[protonCli] login: failed — ${error}`);
                 resolve({ ok: false, error });
             }
@@ -264,7 +287,7 @@ export async function ensureFolder(remotePath) {
     for (const name of segments) {
         const res = await run(['filesystem', 'create-folder', parent, name]);
         if (res.code !== 0 && !isExistsConflict(res)) {
-            throw new Error(`create-folder "${name}" in "${parent}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
+            throw new Error(`create-folder "${name}" in "${parent}" failed: ${errText(res)}`);
         }
         parent = `${parent}/${name}`;
     }
@@ -272,7 +295,7 @@ export async function ensureFolder(remotePath) {
     // Verify final existence (the create may have been a no-op "already exists").
     const info = await run(['filesystem', 'info', parent]);
     if (info.code !== 0) {
-        throw new Error(`folder "${parent}" not found after ensureFolder: ${info.stderr.trim() || info.stdout.trim()}`);
+        throw new Error(`folder "${parent}" not found after ensureFolder: ${errText(info)}`);
     }
     return parent;
 }
@@ -304,7 +327,7 @@ export async function list(remotePath, { strict = false } = {}) {
     };
     const res = await run(['filesystem', 'list', remotePath, '-j']);
     if (res.code !== 0) {
-        return fail(`exit ${res.code}: ${res.stderr.trim() || res.stdout.trim() || 'no output'}`);
+        return fail(`exit ${res.code}: ${errText(res)}`);
     }
     let parsed;
     try {
@@ -388,7 +411,7 @@ export async function uploadFile(localPath, remoteParent, { conflictStrategy = '
         { timeoutMs: 0 },
     );
     if (res.code !== 0) {
-        throw new Error(`upload "${localPath}" → "${remoteParent}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
+        throw new Error(`upload "${localPath}" → "${remoteParent}" failed: ${errText(res)}`);
     }
 }
 
@@ -405,7 +428,7 @@ export async function downloadPath(remotePath, localFolder) {
         { timeoutMs: 0 },
     );
     if (res.code !== 0) {
-        throw new Error(`download "${remotePath}" → "${localFolder}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
+        throw new Error(`download "${remotePath}" → "${localFolder}" failed: ${errText(res)}`);
     }
 }
 
@@ -416,6 +439,6 @@ export async function downloadPath(remotePath, localFolder) {
 export async function trash(remotePath) {
     const res = await run(['filesystem', 'trash', remotePath]);
     if (res.code !== 0) {
-        throw new Error(`trash "${remotePath}" failed: ${res.stderr.trim() || res.stdout.trim()}`);
+        throw new Error(`trash "${remotePath}" failed: ${errText(res)}`);
     }
 }
