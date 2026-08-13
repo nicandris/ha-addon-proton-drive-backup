@@ -1,0 +1,41 @@
+# Tag and publish a GitHub release whenever config.yaml's version lands on main.
+#
+# config.yaml is the single source of the version (see DEVELOPMENT.md §10), so
+# there is nothing to decide here: if v<version> is already tagged, this is an
+# ordinary merge and the job is a no-op. Release notes are the matching section
+# of the add-on CHANGELOG — the file Home Assistant itself displays.
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # create the tag and the release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Release if the version is new
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version:' proton_drive_backup/config.yaml | tr -d ' "' | cut -d: -f2)
+          [ -n "$version" ] || { echo "::error::no version: in proton_drive_backup/config.yaml"; exit 1; }
+
+          if gh release view "v$version" >/dev/null 2>&1; then
+            echo "v$version is already released — nothing to do."
+            exit 0
+          fi
+
+          # The CHANGELOG section for this version, up to the next "## " heading.
+          notes=$(awk -v v="## $version" '$0==v{f=1;next} /^## /{if(f)exit} f' proton_drive_backup/CHANGELOG.md)
+          [ -n "$notes" ] || { echo "::error::no '## $version' section in proton_drive_backup/CHANGELOG.md"; exit 1; }
+
+          printf '%s\n' "$notes" > /tmp/notes.md
+          gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes-file /tmp/notes.md
+          echo "Released v$version."
