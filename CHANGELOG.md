@@ -7,6 +7,12 @@
 
 ## Latest release highlights
 
+- **0.4.10** — **A failed sync now says why it failed.** The add-on used to log
+  only the first line of the Proton CLI's output (in practice a bare `====`
+  banner), and reported a CLI killed by the system — an out-of-memory kill — as an
+  ordinary error, pointing you at Proton when the problem was the machine. Also
+  updates the bundled **Proton Drive CLI to 0.8.0**.
+
 - **0.4.9** — **Security:** the Proton session is no longer included in Home
   Assistant backups (until now every backup carried a usable Proton token), and the
   session files are tightened from world-readable `0644` to `0600` in a `0700`
