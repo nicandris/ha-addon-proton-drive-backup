@@ -403,11 +403,15 @@ export function listStrict(remotePath) {
  *
  * @param {string} localPath
  * @param {string} remoteParent
- * @param {{conflictStrategy?:('merge'|'keep-both'|'replace'|'skip')}} [opts]
+ * The strategy flag is `-f` (`--file-conflict-strategy`). CLI 0.8.0 renamed it
+ * from `-c`, which now fails the upload outright with "Unknown option '-c'" —
+ * `-d` is the folder equivalent and is not used here (we only upload files).
+ *
+ * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip')}} [opts]
  */
 export async function uploadFile(localPath, remoteParent, { conflictStrategy = 'replace' } = {}) {
     const res = await run(
-        ['filesystem', 'upload', '-c', conflictStrategy, localPath, remoteParent],
+        ['filesystem', 'upload', '-f', conflictStrategy, localPath, remoteParent],
         { timeoutMs: 0 },
     );
     if (res.code !== 0) {

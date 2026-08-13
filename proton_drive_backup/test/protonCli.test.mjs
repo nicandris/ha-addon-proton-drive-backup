@@ -320,6 +320,14 @@ test('uploadFile/downloadPath/trash resolve on success', async () => {
     await cli.trash('/my-files/f/x.tar');
 });
 
+test('uploadFile passes the 0.8.0 conflict flag (-f), not the removed -c', async () => {
+    clearFake();
+    process.env.FAKE_FS_CODE = '0';
+    // The fixture rejects -c exactly as CLI 0.8.0 does ("Unknown option '-c'"),
+    // which is what silently stopped every upload after the 0.6.0 → 0.8.0 bump.
+    await cli.uploadFile('/tmp/x.tar', '/my-files/f');
+});
+
 test('run() caps captured output so a long upload cannot grow memory', async () => {
     clearFake();
     // ~2 MB of chatter; the wrapper keeps only a head+tail window.

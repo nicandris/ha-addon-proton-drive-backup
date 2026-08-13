@@ -7,6 +7,10 @@
 
 ## Latest release highlights
 
+- **0.4.11** — **Fixes uploads**, which stopped working in 0.4.10: the bundled
+  Proton Drive CLI 0.8.0 renamed a command-line flag, so every upload failed at
+  once. Nothing was lost — the backups were simply not copied to Proton.
+
 - **0.4.10** — **A failed sync now says why it failed.** The add-on used to log
   only the first line of the Proton CLI's output (in practice a bare `====`
   banner), and reported a CLI killed by the system — an out-of-memory kill — as an
