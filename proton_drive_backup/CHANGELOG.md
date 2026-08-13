@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.4.10
+
+### Fixed
+
+- **A failed sync now tells you *why*.** When the Proton CLI failed, the add-on
+  logged only the first line of its output — in practice a bare `====` banner —
+  because it used the CLI's error stream *or* its normal output, never both. Both
+  are now reported (with terminal colour codes and redrawn lines stripped, which
+  hid further lines in the add-on log).
+- **A CLI killed by the system is no longer reported as an ordinary error.** If
+  Home Assistant runs out of memory, the kernel kills the Proton CLI mid-run; that
+  looked identical to "exit 1", i.e. a Proton problem. The log now says
+  `killed by SIGKILL — most likely the out-of-memory killer`, so you look at the
+  machine instead of at Proton.
+
+### Changed
+
+- **Proton Drive CLI 0.6.0 → 0.8.0** (released 2026-08-13). Checksums verified
+  against Proton's published SHA-512 for both the x64 and arm64 musl builds.
+
+
 ## 0.4.9
 
 ### Security

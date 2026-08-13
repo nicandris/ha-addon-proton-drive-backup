@@ -239,6 +239,26 @@ test('listStrict() returns the parsed entries on success (incl. a genuinely empt
     assert.deepEqual(await cli.listStrict('/my-files/x'), []);
 });
 
+// --- 0.4.10: a failure must SAY why. Two ways the reason went missing. ---
+
+test('a CLI error reports BOTH streams, not just stderr', async () => {
+    clearFake();
+    process.env.FAKE_LIST_CODE = '1';
+    process.env.FAKE_LIST_STDERR = '===============================================';
+    process.env.FAKE_LIST_STDOUT = 'Error: node 42 could not be decrypted';
+    // The banner alone (old `stderr || stdout`) said nothing at all.
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /could not be decrypted/);
+});
+
+test('a signal-killed CLI is reported as killed, not as a plain exit 1', async () => {
+    clearFake();
+    process.env.FAKE_LIST_SIGKILL = '1';
+    const res = await cli.run(['filesystem', 'list', '/my-files/x', '-j']);
+    assert.notEqual(res.code, 1, 'an OOM kill must not masquerade as an ordinary exit 1');
+    assert.match(res.stderr, /killed by SIGKILL/);
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /out-of-memory/);
+});
+
 // --- L7: "does not exist" must not be read as an "already exists" success ---
 
 test('ensureFolder treats "already exists" as success but NOT "does not exist"', async () => {
