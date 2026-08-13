@@ -541,7 +541,7 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
 
 ## 11. Known limitations & gotchas
 
-- **CLI is early (`proton-drive` v0.6.0, pinned).** Pinned by URL + SHA-256 in
+- **CLI is early (`proton-drive` v0.8.0, pinned).** Pinned by URL + SHA-256 in
   the Dockerfile. Bumping the CLI means updating both the URL and the hashes for
   each arch.
 - **`filesystem list --json` schema (fixed in 0.2.4).** The CLI emits a bare
