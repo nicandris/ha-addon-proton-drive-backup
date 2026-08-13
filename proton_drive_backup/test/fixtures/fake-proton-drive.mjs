@@ -50,6 +50,12 @@ if (a[0] === 'filesystem') {
         if (c !== 0) err(env.FAKE_CREATE_MSG ?? 'create failed');
         process.exit(c);
     }
+    // CLI 0.8.0 renamed the conflict-strategy flag from -c to -f and rejects the
+    // old one. Reject it here too, so a regression fails the suite.
+    if (sub === 'upload' && a.includes('-c')) {
+        err("Unknown option '-c'.");
+        process.exit(1);
+    }
     if (sub === 'upload' || sub === 'download' || sub === 'trash') {
         const c = code('FAKE_FS_CODE', 0);
         if (c !== 0) err(env.FAKE_FS_MSG ?? `${sub} failed`);

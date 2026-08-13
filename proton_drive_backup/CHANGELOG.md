@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.11
+
+### Fixed
+
+- **Uploads work again on Proton Drive CLI 0.8.0.** The CLI renamed the upload
+  conflict-strategy flag from `-c` to `-f`, so every upload since the 0.4.10 bump
+  failed immediately with `Unknown option '-c'` — nothing new reached Proton Drive.
+  (The 0.4.10 error reporting is what made this visible at all: the CLI puts that
+  message on its normal output, which older versions of the add-on discarded.)
+
+
 ## 0.4.10
 
 ### Fixed
