@@ -369,7 +369,11 @@ export function sanitizeName(name) {
  * `(slug)` suffix guarantees uniqueness and enables dedup on the next sync.
  */
 export function remoteNameFor(backup) {
-    return `${sanitizeName(backup?.name)} (${backup?.slug}).tar`;
+    // An unnamed HA backup (seen from a backup job that died mid-creation) used
+    // to produce a leading-space filename like " (abc123).tar". The slug is the
+    // part that matters, but the name must not be empty.
+    const name = sanitizeName(backup?.name) || 'Unnamed backup';
+    return `${name} (${backup?.slug}).tar`;
 }
 
 /**

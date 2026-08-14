@@ -300,6 +300,35 @@ export async function ensureFolder(remotePath) {
     return parent;
 }
 
+/** Unwrap the CLI's `Result` wrapper (`{ok, value}`); pass anything else through. */
+const unwrap = (v) => (v && typeof v === 'object' && 'ok' in v && 'value' in v ? v.value : v);
+
+/**
+ * A remote file's size in bytes, or `undefined` when the payload doesn't carry
+ * one (folders, or a schema we don't recognise).
+ *
+ * Deliberately searches several keys on both the entry and its `activeRevision`.
+ * Until 0.4.11 this read exactly one path (`activeRevision.value.claimedSize`);
+ * a CLI schema change silently turned every size into "unknown", which makes
+ * `mirroredSlugs` verify nothing and re-upload every backup on every sync.
+ * Reading `undefined` is the safe direction (never deletes a local copy) but it
+ * is expensive, so cast a wide net rather than one exact path.
+ *
+ * ponytail: key list, not a schema. Add a key when a CLI release moves it.
+ */
+const SIZE_KEYS = ['claimedSize', 'size', 'sizeBytes', 'storageSize', 'totalSize', 'Size'];
+function sizeOf(entry) {
+    for (const src of [unwrap(entry?.activeRevision), entry]) {
+        if (!src || typeof src !== 'object') continue;
+        for (const key of SIZE_KEYS) {
+            const n = Number(unwrap(src[key]));
+            // >0: a 0 here means "no size in this field", not a 0-byte backup.
+            if (Number.isFinite(n) && n > 0) return n;
+        }
+    }
+    return undefined;
+}
+
 /**
  * List the direct children of a remote folder.
  *
@@ -356,12 +385,7 @@ export async function list(remotePath, { strict = false } = {}) {
         if (typeof n === 'string') name = n;
         else if (n && typeof n === 'object' && n.ok && typeof n.value === 'string') name = n.value;
         else if (typeof (e?.Name ?? e?.fileName) === 'string') name = e.Name ?? e.fileName;
-        // Size lives on activeRevision (itself a Result), absent for folders.
-        const rev = e?.activeRevision;
-        const flatSize = e?.size ?? e?.Size;
-        const size = (rev && rev.ok && rev.value && typeof rev.value.claimedSize === 'number')
-            ? rev.value.claimedSize
-            : (typeof flatSize === 'number' ? flatSize : undefined);
+        const size = sizeOf(e);
         // Timestamps come through as plain ISO strings (not Result-wrapped).
         // Retention now sorts by date, so surface it: prefer modificationTime,
         // else creationTime.
@@ -382,6 +406,13 @@ export async function list(remotePath, { strict = false } = {}) {
     // Log only the MAPPED fields. The raw NodeEntity payload was logged before
     // 0.4.1 — it carries node ids, revision ids and hashes, and add-on logs get
     // pasted into public issues.
+    // Sizes gone missing across the board = the CLI moved the field again. Say so
+    // loudly: silently unknown sizes re-upload every backup on every sync.
+    if (entries.length && entries.every((e) => e.size == null)) {
+        console.warn(`[protonCli] list "${remotePath}": ${entries.length} entries but not one size — `
+            + 'the CLI\'s output schema has probably changed. Backups cannot be size-verified until '
+            + 'the new field is added to SIZE_KEYS, so each sync will re-upload them.');
+    }
     console.debug(`[protonCli] list "${remotePath}": ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}`
         + (entries.length ? ` — ${entries.map((e) => `${e.name}${e.size != null ? ` (${e.size}B)` : ''}`).join(', ')}` : ''));
     return entries;
