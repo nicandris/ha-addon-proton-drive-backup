@@ -7,6 +7,10 @@
 
 ## Latest release highlights
 
+- **0.4.12** — **Stops re-uploading every backup on every sync.** The bundled CLI
+  0.8.0 moved the file-size field, so nothing could be size-verified and all
+  backups were copied again each time (they showed as 0.0 B in the panel).
+
 - **0.4.11** — **Fixes uploads**, which stopped working in 0.4.10: the bundled
   Proton Drive CLI 0.8.0 renamed a command-line flag, so every upload failed at
   once. Nothing was lost — the backups were simply not copied to Proton.

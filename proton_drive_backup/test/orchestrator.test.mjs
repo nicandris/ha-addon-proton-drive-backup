@@ -22,6 +22,15 @@ test('remoteNameFor builds "<name> (<slug>).tar"', () => {
     );
 });
 
+test('remoteNameFor never produces a nameless " (slug).tar"', () => {
+    // A backup job that died mid-creation leaves an HA backup with no name.
+    for (const name of ['', '   ', null, undefined]) {
+        const remote = o.remoteNameFor({ name, slug: 'e4bb4388' });
+        assert.equal(remote, 'Unnamed backup (e4bb4388).tar');
+        assert.equal(o.slugFromRemoteName(remote), 'e4bb4388'); // still round-trips
+    }
+});
+
 test('slugFromRemoteName extracts the trailing (slug), null when absent', () => {
     assert.equal(o.slugFromRemoteName('Automatic backup 2026.7.3 (a1b2c3d4).tar'), 'a1b2c3d4');
     assert.equal(o.slugFromRemoteName('Core 2026.7 (dead-beef).tar'), 'dead-beef');

@@ -239,6 +239,36 @@ test('listStrict() returns the parsed entries on success (incl. a genuinely empt
     assert.deepEqual(await cli.listStrict('/my-files/x'), []);
 });
 
+// --- 0.4.12: a size that moved must still be found. Unknown sizes verify
+// nothing, so every backup gets re-uploaded on every sync. ---
+
+test('list() finds the size wherever the CLI puts it', async () => {
+    const shapes = {
+        'activeRevision Result + claimedSize (0.6.x)': { name: 'a.tar', activeRevision: { ok: true, value: { claimedSize: 11 } } },
+        'activeRevision Result + size': { name: 'a.tar', activeRevision: { ok: true, value: { size: 11 } } },
+        'activeRevision unwrapped': { name: 'a.tar', activeRevision: { size: 11 } },
+        'flat size': { name: 'a.tar', size: 11 },
+        'flat sizeBytes': { name: 'a.tar', sizeBytes: 11 },
+        'Result-wrapped size': { name: 'a.tar', size: { ok: true, value: 11 } },
+        'numeric string': { name: 'a.tar', size: '11' },
+    };
+    for (const [label, entry] of Object.entries(shapes)) {
+        clearFake();
+        process.env.FAKE_LIST_JSON = JSON.stringify([entry]);
+        const [got] = await cli.list('/my-files/x');
+        assert.equal(got.size, 11, `size not found for: ${label}`);
+    }
+});
+
+test('list() reports no size rather than 0 when the payload has none', async () => {
+    clearFake();
+    process.env.FAKE_LIST_JSON = JSON.stringify([{ name: 'folder', type: 'folder' }]);
+    const [got] = await cli.list('/my-files/x');
+    // undefined (= "unverified", re-upload) is safe; 0 would falsely match a
+    // 0-byte expectation and could justify deleting a local backup.
+    assert.equal(got.size, undefined);
+});
+
 // --- 0.4.10: a failure must SAY why. Two ways the reason went missing. ---
 
 test('a CLI error reports BOTH streams, not just stderr', async () => {

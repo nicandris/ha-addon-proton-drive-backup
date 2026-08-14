@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.12
+
+### Fixed
+
+- **Backups are no longer re-uploaded on every sync.** Proton Drive CLI 0.8.0
+  moved the file-size field, and the add-on read sizes from one exact place — so
+  every mirrored backup showed as **0.0 B** and none could be size-verified. An
+  unverified copy is treated as "not mirrored", so each 6-hourly sync re-uploaded
+  everything (~15 GB). Sizes are now read from any of the places the CLI has used,
+  and if a future release moves them again the log says so explicitly instead of
+  quietly re-uploading.
+- **A backup with no name no longer becomes `" (slug).tar"` in Proton Drive.**
+  A Home Assistant backup job that dies mid-creation leaves an unnamed backup; it
+  is now stored as `Unnamed backup (<slug>).tar`.
+
+
 ## 0.4.11
 
 ### Fixed
