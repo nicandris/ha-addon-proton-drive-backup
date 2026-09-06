@@ -1,0 +1,69 @@
+# The add-on has a real test suite (node --test) that nothing ran until now, and
+# a Dockerfile that pins the Proton Drive CLI by URL + SHA-256. That pin has
+# rotted server-side before — a build that stops resolving is the only warning
+# there is — so the image is also built weekly, not just on pull requests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 5 * * 1" # Mondays: catch a CLI pin that stopped resolving.
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 24 is what the image ships (Dockerfile pins nodejs~=24).
+        node: ["24"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Run the test suite
+        working-directory: proton_drive_backup
+        run: npm test
+
+  lint:
+    name: Lint add-on config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: frenck/action-app-linter@v2.21.1
+        with:
+          path: ./proton_drive_backup
+
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, aarch64]
+    steps:
+      - uses: actions/checkout@v7
+
+      # aarch64 is built under emulation; amd64 is native.
+      - uses: docker/setup-qemu-action@v4
+        if: matrix.arch == 'aarch64'
+
+      # The default docker driver cannot build for a foreign platform.
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build (no push)
+        run: |
+          set -euo pipefail
+          case "${{ matrix.arch }}" in
+            amd64) platform=linux/amd64 ;;
+            aarch64) platform=linux/arm64 ;;
+          esac
+          docker buildx build \
+            --platform "$platform" \
+            --build-arg BUILD_ARCH="${{ matrix.arch }}" \
+            proton_drive_backup
