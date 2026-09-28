@@ -7,6 +7,9 @@
 
 ## Latest release highlights
 
+- **0.4.13** — **New `permanently_delete` option (off by default)** clears
+  pruned backups out of the Proton trash, so they stop counting against your
+  quota. Also fixes saving settings from the panel.
 - **0.4.12** — **Stops re-uploading every backup on every sync.** The bundled CLI
   0.8.0 moved the file-size field, so nothing could be size-verified and all
   backups were copied again each time (they showed as 0.0 B in the panel).

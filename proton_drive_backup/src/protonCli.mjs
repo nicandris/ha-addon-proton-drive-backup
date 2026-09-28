@@ -477,3 +477,22 @@ export async function trash(remotePath) {
         throw new Error(`trash "${remotePath}" failed: ${errText(res)}`);
     }
 }
+
+/**
+ * Permanently delete every trashed file named `name`. Trash is flat, and a name
+ * shared by several trashed nodes (e.g. copies replaced by a re-upload) is only
+ * addressable by node UID — so always delete by UID, never by name.
+ * @param {string} name - bare filename, as it was before trashing
+ * @returns {Promise<number>} how many trashed nodes were deleted
+ */
+export async function deleteFromTrash(name) {
+    const uids = (await list('/trash', { strict: true }))
+        .filter((e) => e.name === name && e.uid)
+        .map((e) => `/trash/${e.uid}`);
+    if (!uids.length) throw new Error(`delete "${name}" failed: not found in /trash`);
+    const res = await run(['filesystem', 'delete', ...uids]);
+    if (res.code !== 0) {
+        throw new Error(`delete "${name}" failed: ${errText(res)}`);
+    }
+    return uids.length;
+}

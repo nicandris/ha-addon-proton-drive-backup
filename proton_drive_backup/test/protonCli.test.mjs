@@ -426,3 +426,20 @@ test('secureSessionStore never throws when the store cannot be created', async (
         if (saved === undefined) delete process.env.XDG_DATA_HOME; else process.env.XDG_DATA_HOME = saved;
     }
 });
+
+// --- deleteFromTrash: trash is flat, so same-named nodes go by UID ---
+
+test('deleteFromTrash deletes every same-named trashed node by UID', async () => {
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~a' },
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~b' },
+        { name: { ok: true, value: 'other.tar' }, uid: 'v~c' },
+    ]);
+    process.env.FAKE_DELETE_EXPECT = '/trash/v~a /trash/v~b';
+    assert.equal(await cli.deleteFromTrash('x (s1).tar'), 2);
+});
+
+test('deleteFromTrash throws when the name is not in the trash', async () => {
+    process.env.FAKE_LIST_JSON = '[]';
+    await assert.rejects(() => cli.deleteFromTrash('x (s1).tar'), /not found in \/trash/);
+});

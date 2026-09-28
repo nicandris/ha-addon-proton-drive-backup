@@ -147,23 +147,24 @@ export async function selfInfo() {
  * Persist (a subset of) this add-on's own options, so a change made in the Web UI
  * survives a restart and stays in sync with HA's Configuration tab.
  *
- * The Supervisor merges the given keys into the stored options and validates them
- * against `config.yaml`'s schema, so an invalid value is rejected here rather
- * than silently applied. `self` is the documented way for an add-on to address
- * itself; if a Supervisor build rejects it we fall back to the resolved slug.
+ * The Supervisor REPLACES the stored options with what it is sent and rejects a
+ * set missing any required key ("Missing option 'log_level'"), so the change is
+ * merged over the current options first. It validates against `config.yaml`'s
+ * schema, so an invalid value is rejected here rather than silently applied.
+ * `self` is the documented way for an add-on to address itself; if a Supervisor
+ * build rejects the POST we fall back to the resolved slug.
  *
- * @param {Record<string, unknown>} options - only the keys being changed.
+ * @param {Record<string, unknown>} changes - only the keys being changed.
  */
-export async function setSelfOptions(options) {
-    console.debug(`[supervisor] setSelfOptions: ${Object.keys(options).join(', ')}`);
+export async function setSelfOptions(changes) {
+    console.debug(`[supervisor] setSelfOptions: ${Object.keys(changes).join(', ')}`);
+    const info = await selfInfo();
+    const options = { ...info?.options, ...changes };
     try {
         return await supervisorJson('POST', '/addons/self/options', { options });
     } catch (err) {
         // Fall back to the explicit slug (e.g. `a1b2c3d4_proton_drive_backup`).
-        let slug;
-        try {
-            slug = (await selfInfo())?.slug;
-        } catch { /* report the original failure below */ }
+        const slug = info?.slug;
         if (!slug) throw err;
         console.debug(`[supervisor] setSelfOptions: retrying with slug ${slug}`);
         return supervisorJson('POST', `/addons/${slug}/options`, { options });
