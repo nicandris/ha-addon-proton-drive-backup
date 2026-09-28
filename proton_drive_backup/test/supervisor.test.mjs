@@ -135,3 +135,13 @@ test('uploadBackup streams a multipart body and returns the new slug', async () 
         await rm(dir, { recursive: true, force: true });
     }
 });
+
+test('setSelfOptions merges the change over the current options', async () => {
+    // The Supervisor replaces options wholesale and rejects a set missing a
+    // required key, so a partial panel save must carry the rest along.
+    routes.set('GET /addons/self/info', { status: 200, body: { result: 'ok', data: { slug: 'x_pdb', options: { log_level: 'info', keep_app_in_ha: 0 } } } });
+    routes.set('POST /addons/self/options', { status: 200, body: { result: 'ok', data: {} } });
+    await supervisor.setSelfOptions({ keep_app_in_ha: 3 });
+    const post = seen.findLast((r) => r.key === 'POST /addons/self/options');
+    assert.deepEqual(post.body, { options: { log_level: 'info', keep_app_in_ha: 3 } });
+});
