@@ -56,6 +56,15 @@ if (a[0] === 'filesystem') {
         err("Unknown option '-c'.");
         process.exit(1);
     }
+    // delete only takes trashed items; fail unless called with the expected paths.
+    if (sub === 'delete') {
+        const got = a.slice(2).join(' ');
+        if (env.FAKE_DELETE_EXPECT && got !== env.FAKE_DELETE_EXPECT) {
+            err(`unexpected delete args: ${got}`);
+            process.exit(1);
+        }
+        process.exit(0);
+    }
     if (sub === 'upload' || sub === 'download' || sub === 'trash') {
         const c = code('FAKE_FS_CODE', 0);
         if (c !== 0) err(env.FAKE_FS_MSG ?? `${sub} failed`);

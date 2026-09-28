@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.13
+
+### Added
+
+- **`permanently_delete` option (off by default).** Pruned and deleted backups
+  used to land in the Proton Drive trash, where they still count against your
+  storage quota. With this on, they are removed from the trash as well, using the
+  CLI's `filesystem delete`.
+
+### Fixed
+
+- **Saving settings in the panel could be rejected.** The Supervisor replaces an
+  add-on's options with exactly what it is sent and rejects a set that is
+  missing a required option, and the panel only sent the settings it edits.
+  The change is now merged over your current options before it is saved.
+
+
 ## 0.4.12
 
 ### Fixed

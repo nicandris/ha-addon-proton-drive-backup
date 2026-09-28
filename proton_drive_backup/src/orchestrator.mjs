@@ -97,6 +97,7 @@ function cfg() {
         keepAppInProton: parseInt(process.env.KEEP_APP_IN_PROTON || '0', 10) || 0,
         keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
         keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
+        permanentlyDelete: process.env.PERMANENTLY_DELETE === 'true',
         automaticNamePrefix: process.env.AUTOMATIC_NAME_PREFIX || 'Automatic backup',
         backupPassword: process.env.BACKUP_PASSWORD || undefined,
         stagingDir: process.env.STAGING_DIR || null,
@@ -656,12 +657,21 @@ export async function listProtonBackups() {
         .map((e) => ({ name: e.name, size: e.size, date: e.date }));
 }
 
-/** Delete (trash) one mirrored backup by its remote filename. */
+/**
+ * Trash one remote backup and, with `permanently_delete` on, purge it from the
+ * Proton trash too — trashed files still count against the storage quota.
+ */
+async function removeRemote(folder, name) {
+    await cli.trash(`${folder}/${name}`);
+    if (cfg().permanentlyDelete) await cli.deleteFromTrash(name);
+}
+
+/** Delete one mirrored backup (trash, or permanently) by its remote filename. */
 export async function deleteProtonBackup(remoteName) {
     assertValidRemoteName(remoteName); // never let a caller escape the folder
     const folder = await remoteFolder();
     // Validated as a bare filename above, so no escaping is needed here.
-    await cli.trash(`${folder}/${remoteName}`);
+    await removeRemote(folder, remoteName);
 }
 
 /**
@@ -770,7 +780,7 @@ export async function pruneProton() {
     for (const name of toPrune) {
         try {
             console.log(`[orchestrator] Pruning Proton backup "${name}"`);
-            await cli.trash(`${folder}/${name}`);
+            await removeRemote(folder, name);
         } catch (err) {
             recordError(`Proton prune failed: ${describeError(err)}`);
         }

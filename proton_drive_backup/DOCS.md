@@ -54,6 +54,7 @@ Set these on the app's **Configuration** tab, then **Save** and restart the app.
 | `keep_app_in_proton`    | `10`                     | How many **app** backups (everything not named "Automatic backup" — per-add-on backups, manual snapshots) to keep in Proton Drive. `0` keeps all. Independent of the automatic bucket, so an app-backup burst can't evict automatic backups. |
 | `keep_automatic_in_ha`  | `0`                      | Newest **automatic** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button — never automatically. `0` = keep all automatic (no local clean-up of that bucket). |
 | `keep_app_in_ha`        | `0`                      | Newest **app** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button. `0` = keep all app backups (no local clean-up of that bucket). |
+| `permanently_delete`    | `false`                  | When a backup is pruned or deleted from Proton Drive, also empty it out of the Drive **trash**. Trashed files still count against your storage quota until the trash is emptied. Off = backups go to the trash only, and can be restored from there. |
 | `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty if they are not.                                 |
 | `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Four levels exist internally, so `trace` behaves as `debug`, `notice` as `info` and `fatal` as `error`. Can also be changed at runtime from the Web UI (which offers the four internal levels).  |
 
@@ -137,7 +138,7 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
   straight away and the status card shows the current step ("Restoring … downloading
   from Proton Drive", then "Home Assistant is restoring…"), so a multi-GB restore
   never looks idle. A restore and a sync can never run at the same time.
-- **Delete** — remove a backup from Proton Drive (moves it to the Drive trash).
+- **Delete** — remove a backup from Proton Drive (moves it to the Drive trash, or deletes it for good with `permanently_delete`).
 - Change the **log level** at runtime.
 
 ## Security
