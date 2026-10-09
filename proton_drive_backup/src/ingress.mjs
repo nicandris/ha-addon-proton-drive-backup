@@ -260,6 +260,10 @@ ${DARK_PALETTE}
   .card { background: var(--card-background-color); border-radius: var(--ha-card-border-radius); padding: 1rem 1.25rem; margin-bottom: 1rem; box-shadow: 0 1px 3px var(--shadow-color); }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; align-items: start; }
   .grid > .card { margin-bottom: 0; }
+  .stack { display: flex; flex-direction: column; gap: 1rem; }
+  .stack > .card { margin-bottom: 0; }
+  th[data-sort] { cursor: pointer; user-select: none; }
+  th[data-sort]::after { content: attr(data-arrow); }
   @media (max-width: 720px) { .grid { grid-template-columns: 1fr; } }
   .row { display: flex; justify-content: space-between; gap: 1rem; padding: .25rem 0; }
   .row span:first-child { color: var(--secondary-text-color); }
@@ -304,6 +308,18 @@ ${DARK_PALETTE}
   <div class="card" id="statusCard">Loading…</div>
   <div class="card" id="statsCard" style="display:none"></div>
   <div class="card" id="settingsCard" style="display:none"></div>
+  <div class="stack">
+    <div class="card" id="connectedCard" style="display:none">
+      <button class="ghost" id="disconnectBtn">Disconnect</button>
+    </div>
+    <div class="card">
+      <button class="primary" id="createBackup" style="margin-right:.35rem">Create backup</button>
+      <button class="primary" id="syncNow">Sync now</button>
+      <button class="ghost" id="pruneHA" style="margin-left:.35rem">Clean up local backups</button>
+      <p class="hint" id="createHint" style="margin:.5rem 0 0">Create backup makes a new Home Assistant backup now and uploads it. Sync now just uploads existing HA backups.</p>
+      <p class="hint" id="pruneHint" style="margin:.5rem 0 0"></p>
+    </div>
+  </div>
 </div>
 <div class="card" id="connectCard" style="display:none">
   <h2 style="font-size:1.1rem">Connect to Proton Drive</h2>
@@ -315,20 +331,10 @@ ${DARK_PALETTE}
   </div>
   <div class="err" id="connectError" style="margin-top:.5rem"></div>
 </div>
-<div class="card" id="connectedCard" style="display:none">
-  <button class="ghost" id="disconnectBtn">Disconnect</button>
-</div>
-<div class="card">
-  <button class="primary" id="createBackup" style="margin-right:.35rem">Create backup</button>
-  <button class="primary" id="syncNow">Sync now</button>
-  <button class="ghost" id="pruneHA" style="margin-left:.35rem">Clean up local backups</button>
-  <p class="hint" id="createHint" style="margin:.5rem 0 0">Create backup makes a new Home Assistant backup now and uploads it. Sync now just uploads existing HA backups.</p>
-  <p class="hint" id="pruneHint" style="margin:.5rem 0 0"></p>
-</div>
 <div class="card">
   <h2 style="font-size:1.1rem">Proton backups</h2>
   <table>
-    <thead><tr><th>Date</th><th>Name</th><th>Size</th><th>Actions</th></tr></thead>
+    <thead><tr><th data-sort="date">Date</th><th data-sort="name">Name</th><th data-sort="size">Size</th><th>Actions</th></tr></thead>
     <tbody id="backupRows"><tr><td colspan="4">Loading…</td></tr></tbody>
   </table>
 </div>
@@ -511,16 +517,40 @@ async function refresh() {
     connectBtn.disabled = !!s.loginInProgress;
     connectBtn.textContent = s.loginInProgress ? 'Waiting for sign-in…' : (s.loginUrl ? 'Restart sign-in' : 'Connect');
 
-    var rows = (s.backups || []).slice().sort(function(a,b){ return (new Date(b.date || 0)) - (new Date(a.date || 0)); });
-    var tbody = document.getElementById('backupRows');
-    if (rows.length === 0) {
-      tbody.innerHTML = s.pending
+    lastBackups = s.backups || [];
+    if (lastBackups.length === 0) {
+      document.getElementById('backupRows').innerHTML = s.pending
         ? '<tr><td colspan="4"><span class="spinner"></span> Loading…</td></tr>'
         : '<tr><td colspan="4">No backups in Proton Drive</td></tr>';
       scheduleNextPoll(s);
       return;
     }
-    tbody.innerHTML = rows.map(function(b){
+    renderRows();
+    scheduleNextPoll(s);
+  } catch (e) {
+    document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + esc(e && e.message ? e.message : e) + '</span>';
+    scheduleNextPoll(null);
+  }
+}
+
+// Proton backups table: click a header to sort, click again to reverse.
+var lastBackups = [];
+var sortKey = 'date', sortDir = -1; // newest first
+function sortValue(b) {
+  if (sortKey === 'date') return new Date(b.date || 0).getTime();
+  if (sortKey === 'size') return Number(b.size) || 0;
+  return String(b.name || '').toLowerCase();
+}
+function renderRows() {
+  document.querySelectorAll('th[data-sort]').forEach(function(th){
+    th.dataset.arrow = th.dataset.sort === sortKey ? (sortDir < 0 ? ' ▼' : ' ▲') : '';
+  });
+  var rows = lastBackups.slice().sort(function(a,b){
+    var x = sortValue(a), y = sortValue(b);
+    return (x < y ? -1 : x > y ? 1 : 0) * sortDir;
+  });
+  var tbody = document.getElementById('backupRows');
+  tbody.innerHTML = rows.map(function(b){
       return '<tr><td>' + esc(b.date ? new Date(b.date).toLocaleString() : '') + '</td>' +
         '<td>' + esc(b.name || '') + '</td>' +
         '<td>' + esc(fmtSize(b.size)) + '</td>' +
@@ -533,12 +563,14 @@ async function refresh() {
       'Restore this backup to Home Assistant?\\n\\nThe download + restore runs in the background and can take a long time; progress and any error appear in the status card above.',
       'Restore started. Watch the status card above for progress; Home Assistant will restart when it finishes.'); }; });
     tbody.querySelectorAll('.delete').forEach(function(btn){ btn.onclick = function(){ act('api/delete', decodeURIComponent(btn.dataset.name), 'Delete this backup from Proton Drive?'); }; });
-    scheduleNextPoll(s);
-  } catch (e) {
-    document.getElementById('statusCard').innerHTML = '<span class="err">Failed to load status: ' + esc(e && e.message ? e.message : e) + '</span>';
-    scheduleNextPoll(null);
-  }
 }
+document.querySelectorAll('th[data-sort]').forEach(function(th){
+  th.onclick = function(){
+    if (sortKey === th.dataset.sort) sortDir = -sortDir;
+    else { sortKey = th.dataset.sort; sortDir = sortKey === 'name' ? 1 : -1; }
+    if (lastBackups.length) renderRows();
+  };
+});
 // Poll fast only while something is actually happening; the server caches the
 // expensive lookups anyway, so idle tabs shouldn't hammer it.
 var pollTimer = null;

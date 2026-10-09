@@ -7,6 +7,7 @@
 
 ## Latest release highlights
 
+- **0.4.15** — Sortable backup list, more compact panel, refreshed README.
 - **0.4.14** — Bundled Proton Drive CLI updated to **0.9.0** (download
   and sign-in fixes from Proton).
 - **0.4.13** — **New `permanently_delete` option (off by default)** clears
