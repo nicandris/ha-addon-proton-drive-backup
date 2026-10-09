@@ -7,6 +7,8 @@
 
 ## Latest release highlights
 
+- **0.4.14** — Bundled Proton Drive CLI updated to **0.9.0** (download
+  and sign-in fixes from Proton).
 - **0.4.13** — **New `permanently_delete` option (off by default)** clears
   pruned backups out of the Proton trash, so they stop counting against your
   quota. Also fixes saving settings from the panel.
