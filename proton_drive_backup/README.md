@@ -1,39 +1,18 @@
 # Proton Drive Backup
 
-Mirror your Home Assistant backups to [Proton Drive](https://proton.me/drive)
-using Proton's official first-party `proton-drive` CLI.
+Copies your Home Assistant backups to [Proton Drive](https://proton.me/drive)
+with Proton's official `proton-drive` CLI: on boot, every N hours, and on
+demand, with separate keep-limits for automatic and other backups. You sign in
+through Proton's own browser login, so the app never sees your Proton password.
 
-This is a self-contained Home Assistant app (Node.js). It does **not** create
-backups — you make them however you like in Home Assistant (the built-in
-automatic backup, manual snapshots, other add-ons), and this app copies **all**
-of them to your Proton Drive (on boot, on a check interval, and on demand), with
-retention limits and an ingress web UI. **No Proton credentials are entered into
-or stored by the app** — you sign in through Proton's own browser login. There is
-no companion custom integration.
-
-Requires Home Assistant OS or Supervised, on **amd64** or **aarch64** (Proton
-ships no CLI build for other architectures).
+Requires Home Assistant OS or Supervised on amd64 or aarch64.
 
 ## Quick start
 
-1. Add this repository to your app store (Settings → Apps → App store →
-   ⋮ → Repositories).
-2. Install **Proton Drive Backup** and **Start** it.
-3. Open the **Web UI** and click **Connect to Proton Drive**. Open the sign-in
-   link it shows on any device (phone or PC) and complete sign-in with Proton
-   (including your normal two-factor, if enabled).
-4. The app then uploads any existing Home Assistant backups to Proton Drive (on
-   boot, on the check interval, and when you click **Sync now**). The Web UI
-   shows a live status indicator — a connection badge and, during a sync, an
-   animated **Syncing…** badge with the current step and a progress bar.
+1. Install **Proton Drive Backup** and start it.
+2. Open the panel, click **Connect to Proton Drive**, and finish sign-in from
+   the link it shows, on any device.
+3. Existing backups upload on the next sync, or press **Sync now**.
 
-See [DOCS.md](DOCS.md) for full configuration and usage details.
-
-## Security note
-
-This is a third-party, community app and is not affiliated with Proton AG. It
-uses Proton's official, MIT-licensed `proton-drive` CLI. Backups are end-to-end
-encrypted client-side before upload, and **the app never stores your Proton
-password**. The CLI's session token is written to the app's `/data` directory
-(as with all HA app storage). See [DOCS.md](DOCS.md#security) for the full
-picture and recommendations.
+See the Documentation tab ([DOCS.md](DOCS.md)) for options, restore and
+security notes. A community project, not affiliated with Proton AG.

@@ -2,11 +2,12 @@
 
 This app **mirrors your Home Assistant backups** to
 [Proton Drive](https://proton.me/drive) — much like the Google Drive backup
-add-on. It does **not** create backups itself. You make backups however you like
-in Home Assistant (the built-in automatic backup, manual snapshots, other
-add-ons), and this app copies every one of them offsite to your Proton Drive
-using Proton's official first-party `proton-drive` CLI — on boot, on a check
-interval, and on demand — with retention limits and an ingress web UI.
+add-on. You make backups however you like in Home Assistant (the built-in
+automatic backup, manual snapshots, other add-ons), and this app copies every
+one of them offsite to your Proton Drive using Proton's official first-party
+`proton-drive` CLI — on boot, on a check interval, and on demand — with
+retention limits and an ingress web UI. It never creates backups on a schedule;
+the panel's **Create backup** button makes one on demand.
 
 **No Proton credentials are ever entered into or stored by the app** — you sign
 in through Proton's own browser login (see [Authentication](#authentication)).
@@ -55,6 +56,7 @@ Set these on the app's **Configuration** tab, then **Save** and restart the app.
 | `keep_automatic_in_ha`  | `0`                      | Newest **automatic** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button — never automatically. `0` = keep all automatic (no local clean-up of that bucket). |
 | `keep_app_in_ha`        | `0`                      | Newest **app** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button. `0` = keep all app backups (no local clean-up of that bucket). |
 | `permanently_delete`    | `false`                  | When a backup is pruned or deleted from Proton Drive, also empty it out of the Drive **trash**. Trashed files still count against your storage quota until the trash is emptied. Off = backups go to the trash only, and can be restored from there. |
+| `automatic_name_prefix` | `Automatic backup`       | Backups whose name starts with this count as **automatic** for the keep-counts above; everything else counts as **app**. Change it only if your automatic backups are named differently. |
 | `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty if they are not.                                 |
 | `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Four levels exist internally, so `trace` behaves as `debug`, `notice` as `info` and `fatal` as `error`. Can also be changed at runtime from the Web UI (which offers the four internal levels).  |
 
@@ -116,11 +118,12 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 - See **statistics** — how many backups are in Home Assistant vs mirrored in
   Proton Drive, split by bucket ("N automatic, M app") with total sizes, host
   disk free, and last-backup / next-sync times.
-- See **Settings** — a read-only card showing the effective configuration: drive
-  folder, sync interval, the four keep-counts (automatic/app for Proton and HA),
-  whether a backup password is set (a boolean — the password itself is never
-  shown), and the staging dir if `STAGING_DIR` is set. The status, statistics,
-  and settings cards sit **side by side** on wide screens.
+- Edit **Settings** — drive folder, sync interval, the four keep-counts and the
+  automatic name prefix, saved with **Save settings** (the same options as the
+  Configuration tab). The backup password is only shown as set or not; change it
+  in the Configuration tab. The status, statistics, and settings cards sit
+  **side by side** on wide screens.
+- **Create backup** — make a new full Home Assistant backup now and upload it.
 - **Sync now** — upload any existing Home Assistant backups not yet in Proton
   Drive. The button shows "Syncing…" and is disabled while a sync is already in
   progress.
@@ -183,13 +186,10 @@ by, or supported by Proton AG. It uses Proton's official, MIT-licensed
 
 ## Known limitations
 
-- **Early software.** This app is new and bundles a pinned, early build of the
-  CLI (`proton-drive` v0.6.0). The `filesystem list --json` output shape it emits
-  is still evolving between CLI releases; the app parses it defensively (as of
-  0.2.4 it reads the CLI's `Result`-wrapped `name` and the size at
-  `activeRevision.value.claimedSize`). Debug logs list only the file names and
-  sizes the app actually uses — not Proton's raw payload, which carries internal
-  node/revision ids.
+- **Early CLI.** The app bundles a pinned build of Proton's CLI (`proton-drive`
+  v0.9.0), whose output format still changes between releases. The app parses it
+  defensively and logs a warning if file sizes go missing. Debug logs list only
+  the file names and sizes the app uses, not Proton's raw payload.
 - **Session persists in `/data`.** The CLI session is stored as a plain file in
   the app's `/data` directory via the CLI's `unsafe_file` credentials store (the
   container has no OS keyring) — see [Security](#security).

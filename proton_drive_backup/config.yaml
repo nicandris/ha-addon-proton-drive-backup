@@ -1,8 +1,8 @@
 name: Proton Drive Backup
-version: "0.4.14"
+version: "0.4.15"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
-url: https://github.com/nicandris/ha-addon-proton-drive
+url: https://github.com/nicandris/ha-addon-proton-drive-backup
 arch:
   - amd64
   - aarch64

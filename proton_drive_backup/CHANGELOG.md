@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.15
+
+### Changed
+
+- **Sortable backup list.** Click **Date**, **Name** or **Size** in the Proton
+  backups table to sort by it; click again to reverse.
+- **More compact panel.** The backup buttons and **Disconnect** now sit next to
+  the settings instead of in full-width rows of their own.
+
+### Documentation
+
+- Shorter, up-to-date README; the docs now cover **Create backup**, the
+  editable settings card and the `automatic_name_prefix` option.
+
+
 ## 0.4.14
 
 ### Changed
