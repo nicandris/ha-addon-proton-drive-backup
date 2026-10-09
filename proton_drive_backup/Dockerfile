@@ -10,11 +10,11 @@ ARG BUILD_ARCH
 RUN set -eu; \
     case "${BUILD_ARCH}" in \
       amd64) \
-        URL="https://proton.me/download/drive/cli/0.8.0/linux-x64-musl/proton-drive"; \
-        SHA="51966bfe15eef265604a3561870f42ac0f03ac7adb13b6c3e418f919e3bba95c" ;; \
+        URL="https://proton.me/download/drive/cli/0.9.0/linux-x64-musl/proton-drive"; \
+        SHA="62e27deddcf6329ec92270a03312f460b2da95d0ef9c6e581c91b712c5147558" ;; \
       aarch64) \
-        URL="https://proton.me/download/drive/cli/0.8.0/linux-arm64-musl/proton-drive"; \
-        SHA="61f6c21dabe3976d37577caa23406555bfbb0d2954c9924822c90c81107dde7f" ;; \
+        URL="https://proton.me/download/drive/cli/0.9.0/linux-arm64-musl/proton-drive"; \
+        SHA="54eeb5912078dd7ccbf657691748f7af252acb860e4859c9d08eb22fe9f25b5f" ;; \
       *) echo "unsupported arch: ${BUILD_ARCH}" && false ;; \
     esac; \
     wget -O /usr/local/bin/proton-drive "${URL}"; \

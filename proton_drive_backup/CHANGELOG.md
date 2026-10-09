@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.14
+
+### Changed
+
+- **Bundled Proton Drive CLI updated to 0.9.0.** Proton's release fixes a
+  restore download that could hang on files whose names differ only in
+  upper/lower case, and a sign-in error. Nothing to change on your side; if a
+  sync or the panel's sizes look wrong after updating, please open an issue.
+
+
 ## 0.4.13
 
 ### Added
