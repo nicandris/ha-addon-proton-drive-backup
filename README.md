@@ -6,6 +6,8 @@ It uses Proton's official [`proton-drive`](https://proton.me/support/proton-driv
 CLI, and you sign in through Proton's own browser login, so the app never sees
 your Proton password.
 
+![The Proton Drive Backup panel in Home Assistant](images/panel.png)
+
 ## Features
 
 - Uploads every Home Assistant backup not yet in Proton, on boot, every N hours,
