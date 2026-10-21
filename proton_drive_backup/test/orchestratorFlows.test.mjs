@@ -44,7 +44,11 @@ async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) 
         setSelfOptions: async () => ({}),
     };
     const cli = {
-        isConnected: async () => { calls.connectChecks = (calls.connectChecks || 0) + 1; return fail.notConnected !== true; },
+        isConnected: async () => {
+            calls.connectChecks = (calls.connectChecks || 0) + 1;
+            if (fail.connectGate) await fail.connectGate; // hold a sync open
+            return fail.notConnected !== true;
+        },
         ensureFolder: async () => FOLDER,
         list: async () => remote,
         listStrict: async () => { if (fail.listStrict) throw fail.listStrict; return remote; },
@@ -87,7 +91,7 @@ test('runSync uploads only HA backups missing from Proton', async () => {
              backup('s2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z')],
         remote: [entry('Automatic backup 1 (s1).tar')],
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.uploads, ['Automatic backup 2 (s2).tar']);
     assert.deepEqual(calls.downloads, ['s2']);
     assert.equal(o.getStatus().lastError, null);
@@ -96,7 +100,7 @@ test('runSync uploads only HA backups missing from Proton', async () => {
 test('runSync NEVER creates a backup (mirror model)', async () => {
     process.env.BACKUP_INTERVAL_HOURS = '24';
     const { o, calls } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.created, [], 'runSync must not create backups');
 });
 
@@ -107,7 +111,7 @@ test('runSync skips a backup HA lists but no longer serves (404) without errorin
              backup('s2', 'Automatic backup good', '2026-07-02T00:00:00.000Z')],
         fail: { download: { s1: notFound } },
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.uploads, ['Automatic backup good (s2).tar'], 'the good one still uploads');
     assert.equal(o.getStatus().lastError, null, '404 must not surface as an error');
 });
@@ -117,7 +121,7 @@ test('runSync records a real upload failure but keeps going', async () => {
         ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')],
         fail: { upload: new Error('quota exceeded') },
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.match(o.getStatus().lastError, /quota exceeded/);
     assert.equal(o.getStatus().errors.length, 1);
     // P10: a sync whose uploads failed is not a successful sync.
@@ -126,7 +130,7 @@ test('runSync records a real upload failure but keeps going', async () => {
 
 test('P10: lastSync is set only by a sync without errors', async () => {
     const { o } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
-    await o.runSync(true);
+    await o.runSync();
     assert.equal(o.getStatus().lastError, null);
     assert.ok(o.getStatus().lastSync, 'a clean sync records lastSync');
 });
@@ -140,7 +144,7 @@ test('P10: createBackupNow does not record a sync whose upload failed', async ()
 
 test('runSync leaves no staged archive behind', async () => {
     const { o, staging } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual((await readdir(staging)).filter((f) => f.endsWith('.tar')), []);
     await rm(staging, { recursive: true, force: true });
 });
@@ -152,7 +156,7 @@ test('runSync aborts instead of re-uploading everything when the listing fails',
         remote: [entry('Automatic backup 1 (s1).tar')],
         fail: { listStrict: new Error('You need to login first') },
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.uploads, [], 'must not upload off a failed listing');
     assert.match(o.getStatus().lastError, /login/);
 });
@@ -162,7 +166,7 @@ test('runSync does nothing but report when not connected', async () => {
         ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')],
         fail: { notConnected: true },
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.uploads, []);
     assert.equal(o.getStatus().needsLogin, true);
 });
@@ -171,7 +175,7 @@ test('overlapping syncs are serialised — the second trigger is skipped', async
     const { o, calls } = await load({
         ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')],
     });
-    await Promise.all([o.runSync(true), o.runSync(true)]);
+    await Promise.all([o.runSync(), o.runSync()]);
     assert.equal(calls.uploads.length, 1, 'the same backup must not upload twice');
 });
 
@@ -275,7 +279,7 @@ test('restoreToHA takes the single-operation lock and reports activity', async (
     const { o, calls } = await load({ remote: [entry('Automatic backup 1 (a1).tar')] });
     const p = o.restoreToHA('Automatic backup 1 (a1).tar');
     // While a restore runs, a sync must not start.
-    await o.runSync(true);
+    await o.runSync();
     await p;
     assert.equal(calls.restored.length, 1);
     assert.deepEqual(calls.uploads, [], 'a sync must not run during a restore');
@@ -301,7 +305,7 @@ test('P3: a backup deleted from HA keeps its real date — the newest is not tra
         entry('Automatic backup Y (y).tar', 1048576, '2026-07-05T00:00:00.000Z'),
     ];
     const { o, calls } = await load({ ha, remote });
-    await o.runSync(true); // retention off (keep all): both dates are seen
+    await o.runSync(); // retention off (keep all): both dates are seen
     ha.splice(0, 1); // the user deletes X from HA
     process.env.KEEP_AUTOMATIC_IN_PROTON = '1';
     await o.pruneProton();
@@ -315,7 +319,7 @@ test('runSync does not upload a backup only to trash it (no upload/prune loop)',
              backup('a2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z'),
              backup('a3', 'Automatic backup 3', '2026-07-03T00:00:00.000Z')],
     });
-    await o.runSync(true);
+    await o.runSync();
     assert.deepEqual(calls.uploads.sort(), ['Automatic backup 2 (a2).tar', 'Automatic backup 3 (a3).tar']);
     assert.deepEqual(calls.trashed, []);
 });
@@ -419,4 +423,51 @@ test('P8: pruneProton never trashes the user\'s own .tar files in the folder', a
     });
     await o.pruneProton();
     assert.deepEqual(calls.trashed, []);
+});
+
+// --- the single operation lock (P14) -----------------------------------------
+
+test('P14: delete and local clean-up refuse to run during a sync', async () => {
+    process.env.KEEP_AUTOMATIC_IN_HA = '1';
+    let release;
+    const { o, calls } = await load({
+        ha: [backup('a1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z'),
+             backup('a2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z')],
+        remote: [entry('Automatic backup 1 (a1).tar')],
+        fail: { connectGate: new Promise((r) => { release = r; }) },
+    });
+    const sync = o.runSync();
+    await assert.rejects(() => o.deleteProtonBackup('Automatic backup 1 (a1).tar'), (err) => err.busy === true);
+    await assert.rejects(() => o.pruneHALocalNow(), (err) => err.busy === true);
+    release();
+    await sync;
+    assert.deepEqual(calls.trashed, []);
+    assert.deepEqual(calls.deleted, []);
+    // ...and once the sync is done they run normally.
+    assert.equal((await o.pruneHALocalNow()).deleted, 1);
+});
+
+test('P14: the restore route answers 409 (not started:true) while busy', async () => {
+    let release;
+    await load({ fail: { connectGate: new Promise((r) => { release = r; }) } });
+    process.env.PORT = '0';
+    const ingress = await import(`../src/ingress.mjs?t=${Math.random().toString(36).slice(2)}`);
+    const server = ingress.startIngressServer();
+    await new Promise((r) => server.once('listening', r));
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const post = (path, body) => fetch(`${base}${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
+    });
+    try {
+        await post('/api/sync-now'); // takes the lock, held by connectGate
+        for (const [path, body] of [['/api/restore', { name: 'x (s1).tar' }], ['/api/delete', { name: 'x (s1).tar' }], ['/api/prune-ha']]) {
+            const r = await post(path, body);
+            assert.equal(r.status, 409, path);
+            assert.equal((await r.json()).ok, false, path);
+        }
+    } finally {
+        release();
+        server.closeAllConnections?.();
+        server.close();
+    }
 });

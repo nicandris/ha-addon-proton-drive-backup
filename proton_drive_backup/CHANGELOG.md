@@ -55,6 +55,10 @@
   sizes must now match to within 64 KB.
 - **`permanently_delete` only empties the copy it just trashed.** It purged every
   trashed file with the same name, including copies you had trashed earlier.
+- **Restore, Delete and Clean up local backups say so when the add-on is busy.**
+  A restore started during a sync answered "Restore started" and then did
+  nothing; Delete and the local clean-up ran straight through a running sync.
+  All of them now wait their turn and tell you to try again.
 
 ## 0.4.15
 

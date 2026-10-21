@@ -58,6 +58,10 @@ function sendJson(res, status, obj) {
     res.end(body);
 }
 
+function sendBusy(res) {
+    sendJson(res, 409, { ok: false, error: 'A sync, backup or restore is already running — try again when it finishes.' });
+}
+
 function scheduleSummary() {
     const hours = orchestrator.getConfig().intervalHours;
     if (hours <= 0) return 'On boot + manual only';
@@ -850,7 +854,7 @@ async function handle(req, res) {
         // Upload existing HA backups now. Kick off but don't block the response
         // on full completion.
         invalidateSnapshot();
-        orchestrator.runSync(true)
+        orchestrator.runSync()
             .catch((err) => console.error(`[ingress] sync-now: ${err.message}`))
             .finally(invalidateSnapshot);
         sendJson(res, 200, { ok: true });
@@ -865,7 +869,7 @@ async function handle(req, res) {
             invalidateSnapshot();
             sendJson(res, 200, { ok: true, ...result });
         } catch (err) {
-            sendJson(res, 500, { ok: false, error: err.message });
+            sendJson(res, err.busy ? 409 : 500, { ok: false, error: err.message });
         }
         return;
     }
@@ -878,7 +882,10 @@ async function handle(req, res) {
         }
         // Fire-and-forget like /api/sync-now: a restore downloads a multi-GB
         // archive and blocks HA for minutes, far longer than an HTTP response
-        // should wait. Progress/errors surface via /api/status.
+        // should wait. Progress/errors surface via /api/status. A busy lock is
+        // the one failure we can report now — it used to answer started:true
+        // and then silently do nothing.
+        if (orchestrator.getStatus().syncing) return sendBusy(res);
         invalidateSnapshot();
         orchestrator.restoreToHA(body.name)
             .catch((err) => console.error(`[ingress] restore: ${err.message}`))
@@ -898,7 +905,7 @@ async function handle(req, res) {
             invalidateSnapshot();
             sendJson(res, 200, { ok: true });
         } catch (err) {
-            sendJson(res, 500, { ok: false, error: err.message });
+            sendJson(res, err.busy ? 409 : 500, { ok: false, error: err.message });
         }
         return;
     }

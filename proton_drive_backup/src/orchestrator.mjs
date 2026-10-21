@@ -782,9 +782,12 @@ async function removeRemote(folder, name) {
 /** Delete one mirrored backup (trash, or permanently) by its remote filename. */
 export async function deleteProtonBackup(remoteName) {
     assertValidRemoteName(remoteName); // never let a caller escape the folder
-    const folder = await remoteFolder();
-    // Validated as a bare filename above, so no escaping is needed here.
-    await removeRemote(folder, remoteName);
+    return exclusively(async () => {
+        setActivity(`Deleting ${remoteName} from Proton Drive…`);
+        const folder = await remoteFolder();
+        // Validated as a bare filename above, so no escaping is needed here.
+        await removeRemote(folder, remoteName);
+    });
 }
 
 /**
@@ -921,7 +924,14 @@ export async function pruneProton() {
  * in Proton (SAFETY: never delete an un-mirrored backup, in either bucket).
  * Never runs automatically. Returns { deleted, skippedNotInProton }.
  */
-export async function pruneHALocalNow() {
+export function pruneHALocalNow() {
+    return exclusively(async () => {
+        setActivity('Cleaning up local Home Assistant backups…');
+        return pruneHALocal();
+    });
+}
+
+async function pruneHALocal() {
     const { keepAutomaticInHA, keepAppInHA } = cfg();
     if (keepAutomaticInHA <= 0 && keepAppInHA <= 0) {
         console.debug('[orchestrator] pruneHALocalNow: HA retention disabled (both buckets 0)');
@@ -964,101 +974,110 @@ export async function pruneHALocalNow() {
     return { deleted, failed, skippedNotInProton };
 }
 
-export async function runSync(force = false) {
-    if (syncing) {
-        console.warn('[orchestrator] runSync: a sync is already running — skipping this trigger');
-        return;
-    }
+const BUSY_MESSAGE = 'A sync, backup or restore is already running — try again when it finishes.';
+
+/**
+ * Run `fn` holding the single operation lock (`syncing`) — every operation that
+ * touches backups goes through here, so none can overlap another (a delete or
+ * local clean-up used to run straight through a sync). Throws an error with
+ * `busy: true` instead of waiting when the lock is taken. The check and the
+ * take happen synchronously, before the first await, so two callers can't both
+ * get in.
+ */
+async function exclusively(fn) {
+    if (syncing) throw Object.assign(new Error(BUSY_MESSAGE), { busy: true });
     syncing = true;
-    console.debug(`[orchestrator] runSync: started (force=${!!force})`);
     try {
-        state.lastError = null;
-        setActivity('Checking connection…');
-        console.debug('[orchestrator] runSync: checking session...');
-        const connected = await ensureSession();
-        if (!connected) {
-            state.lastError = 'Not connected to Proton Drive — sign in from the Web UI.';
-            console.warn('[orchestrator] runSync: not connected, skipping (awaiting login)');
-            return;
-        }
-        console.debug('[orchestrator] runSync: session ready');
-
-        console.debug('[orchestrator] runSync: uploading missing HA backups to Proton...');
-        setActivity('Checking Proton Drive…');
-        const { errors } = await syncBackupsToProton();
-        console.debug('[orchestrator] runSync: pruning Proton...');
-        setActivity('Pruning old Proton backups…');
-        const failures = errors + await pruneProton();
-        // lastSync means "last SUCCESSFUL sync" — a run where uploads failed
-        // must not make the backups look current.
-        if (failures) {
-            console.error(`[orchestrator] Sync finished with ${failures} error(s) — last successful sync stays ${state.lastSync || 'never'}`);
-            return;
-        }
-
-        state.lastSync = new Date().toISOString();
-        console.log(`[orchestrator] Sync complete at ${state.lastSync}`);
-        console.debug('[orchestrator] runSync: finished successfully');
-    } catch (err) {
-        state.lastError = describeError(err);
-        console.error(`[orchestrator] Sync failed: ${state.lastError}`);
+        return await fn();
     } finally {
         syncing = false;
         setActivity(null);
     }
 }
 
+/** The connection check every sync-like operation starts with. */
+async function requireSession() {
+    setActivity('Checking connection…');
+    if (await ensureSession()) return true;
+    state.lastError = 'Not connected to Proton Drive — sign in from the Web UI.';
+    console.warn('[orchestrator] Not connected — skipping (awaiting login)');
+    return false;
+}
+
+/**
+ * Upload what's missing, then prune Proton; records lastSync only when both
+ * went through without an error (lastSync = last SUCCESSFUL sync).
+ * @returns {Promise<number>} failures
+ */
+async function mirrorAndPrune() {
+    setActivity('Checking Proton Drive…');
+    const { errors } = await syncBackupsToProton();
+    setActivity('Pruning old Proton backups…');
+    const failures = errors + await pruneProton();
+    if (!failures) state.lastSync = new Date().toISOString();
+    return failures;
+}
+
+export async function runSync() {
+    if (syncing) {
+        console.warn('[orchestrator] runSync: a sync is already running — skipping this trigger');
+        return;
+    }
+    await exclusively(async () => {
+        try {
+            state.lastError = null;
+            if (!(await requireSession())) return;
+            const failures = await mirrorAndPrune();
+            if (failures) {
+                console.error(`[orchestrator] Sync finished with ${failures} error(s) — last successful sync stays ${state.lastSync || 'never'}`);
+            } else {
+                console.log(`[orchestrator] Sync complete at ${state.lastSync}`);
+            }
+        } catch (err) {
+            state.lastError = describeError(err);
+            console.error(`[orchestrator] Sync failed: ${state.lastError}`);
+        }
+    });
+}
+
 /**
  * Manually create a new full HA backup on demand, then mirror it to Proton.
  * On-demand only (no automatic/scheduled creation). Never throws out — records
- * state.lastError like runSync, and honours the single-sync guard.
+ * state.lastError like runSync, and honours the single-operation lock.
  */
 export async function createBackupNow() {
     if (syncing) {
         console.warn('[orchestrator] createBackupNow: a sync/backup is already running — skipping');
         return;
     }
-    syncing = true;
-    try {
-        state.lastError = null;
-        setActivity('Checking connection…');
-        if (!(await ensureSession())) {
-            state.lastError = 'Not connected to Proton Drive — sign in from the Web UI.';
-            return;
-        }
-        const { backupPassword } = cfg();
-        const name = `Manual backup ${new Date().toISOString()}`;
-        setActivity('Creating Home Assistant backup…');
-        console.log(`[orchestrator] Creating manual HA backup "${name}"`);
+    await exclusively(async () => {
         try {
-            await supervisor.createBackup({ name, password: backupPassword });
-            console.debug('[orchestrator] Manual backup created');
+            state.lastError = null;
+            if (!(await requireSession())) return;
+            const { backupPassword } = cfg();
+            const name = `Manual backup ${new Date().toISOString()}`;
+            setActivity('Creating Home Assistant backup…');
+            console.log(`[orchestrator] Creating manual HA backup "${name}"`);
+            try {
+                await supervisor.createBackup({ name, password: backupPassword });
+                console.debug('[orchestrator] Manual backup created');
+            } catch (err) {
+                const msg = describeError(err);
+                state.lastError = /freeze|not running|blocked from execution/i.test(msg)
+                    ? 'Home Assistant is busy (a backup/operation is already running) — try again shortly.'
+                    : `Backup creation failed: ${msg}`;
+                console.error(`[orchestrator] ${state.lastError}`);
+                return;
+            }
+            // Mirror the just-created backup (and any others) to Proton.
+            const failures = await mirrorAndPrune();
+            if (failures) console.error(`[orchestrator] Manual backup created, but syncing it had ${failures} error(s)`);
+            else console.log('[orchestrator] Manual backup created and synced');
         } catch (err) {
-            const msg = describeError(err);
-            state.lastError = /freeze|not running|blocked from execution/i.test(msg)
-                ? 'Home Assistant is busy (a backup/operation is already running) — try again shortly.'
-                : `Backup creation failed: ${msg}`;
-            console.error(`[orchestrator] ${state.lastError}`);
-            return;
+            state.lastError = describeError(err);
+            console.error(`[orchestrator] Manual backup failed: ${state.lastError}`);
         }
-        // Mirror the just-created backup (and any others) to Proton.
-        setActivity('Checking Proton Drive…');
-        const { errors } = await syncBackupsToProton();
-        setActivity('Pruning old backups…');
-        const failures = errors + await pruneProton();
-        if (failures) {
-            console.error(`[orchestrator] Manual backup created, but syncing it had ${failures} error(s)`);
-            return;
-        }
-        state.lastSync = new Date().toISOString();
-        console.log('[orchestrator] Manual backup created and synced');
-    } catch (err) {
-        state.lastError = describeError(err);
-        console.error(`[orchestrator] Manual backup failed: ${state.lastError}`);
-    } finally {
-        syncing = false;
-        setActivity(null);
-    }
+    });
 }
 
 /**
@@ -1072,12 +1091,12 @@ export async function createBackupNow() {
  */
 export async function restoreToHA(remoteName) {
     assertValidRemoteName(remoteName); // path traversal guard (also in the route)
-    if (syncing) {
-        throw new Error('A sync, backup or restore is already running — try again when it finishes.');
-    }
+    return exclusively(() => restore(remoteName));
+}
+
+async function restore(remoteName) {
     const { backupPassword } = cfg();
     console.debug(`[orchestrator] restoreToHA: remoteName="${remoteName}"`);
-    syncing = true;
     // CLI downloads INTO a folder, keeping the remote filename.
     let tmpPath = null;
     try {
@@ -1107,7 +1126,5 @@ export async function restoreToHA(remoteName) {
         throw err;
     } finally {
         if (tmpPath) await rm(tmpPath, { force: true }).catch(() => {});
-        syncing = false;
-        setActivity(null);
     }
 }
