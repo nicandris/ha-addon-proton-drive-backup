@@ -581,3 +581,29 @@ test('a truncated copy of a backup no longer in HA is checked against its rememb
     await o.pruneProton();
     assert.deepEqual(calls.trashed, [], 'the truncated s3 must not take a slot and push out s1');
 });
+
+// --- backup-dates.json handling (follow-up) ------------------------------------
+
+test('backup-dates.json is written atomically and a corrupt one is reported, not silently reset', async () => {
+    const warnings = [];
+    const { o, staging } = await load({ ha: [backup('000000b1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
+    await writeFile(join(staging, 'backup-dates.json'), '{"truncated');
+    console.warn = (m) => warnings.push(String(m));
+    await o.runSync();
+    assert.ok(warnings.some((w) => /backup-dates\.json is unreadable/.test(w)), 'corruption must be logged');
+    const saved = JSON.parse(await readFile(join(staging, 'backup-dates.json'), 'utf8'));
+    assert.deepEqual(saved['000000b1'], { date: '2026-07-01T00:00:00.000Z', size: 1048576 });
+    assert.ok(!existsSync(join(staging, 'backup-dates.json.tmp')), 'written via a temp file, then renamed');
+});
+
+test('the local clean-up remembers dates before deleting from HA', async () => {
+    process.env.KEEP_AUTOMATIC_IN_HA = '1';
+    const { o, staging } = await load({
+        ha: [backup('000000c1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z'),
+             backup('000000c2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z')],
+        remote: [entry('Automatic backup 1 (000000c1).tar')],
+    });
+    assert.equal((await o.pruneHALocalNow()).deleted, 1);
+    const saved = JSON.parse(await readFile(join(staging, 'backup-dates.json'), 'utf8'));
+    assert.equal(saved['000000c1'].date, '2026-07-01T00:00:00.000Z', 'the deleted backup keeps its date');
+});

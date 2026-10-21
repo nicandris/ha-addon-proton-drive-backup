@@ -30,7 +30,7 @@
  * the ingress server).
  */
 
-import { mkdir, readFile, readdir, rm, stat, statfs, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, rm, stat, statfs, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -670,10 +670,18 @@ function datesFile() {
  * @returns {Promise<Record<string,{date?:string,size:number|null}>>} by slug
  */
 async function rememberBackups(haBackups, remoteEntries) {
+    const file = datesFile();
     let known = {};
     try {
-        known = JSON.parse(await readFile(datesFile(), 'utf8')) || {};
-    } catch { /* first run, or unreadable: start fresh */ }
+        known = JSON.parse(await readFile(file, 'utf8')) || {};
+    } catch (err) {
+        // Missing on the first run is normal; anything else loses every
+        // remembered date, so say so rather than resetting silently.
+        if (err.code !== 'ENOENT') {
+            console.warn(`[orchestrator] ${file} is unreadable (${err.message}) — starting it afresh; `
+                + 'backups already gone from HA will count as undated');
+        }
+    }
     for (const b of haBackups || []) {
         if (b?.slug && b.date) known[b.slug] = { date: b.date, size: haBackupSizeBytes(b) };
     }
@@ -682,8 +690,11 @@ async function rememberBackups(haBackups, remoteEntries) {
         ...(remoteEntries || []).map((e) => slugFromRemoteName(e?.name)),
     ]);
     for (const slug of Object.keys(known)) if (!live.has(slug)) delete known[slug];
-    await writeFile(datesFile(), JSON.stringify(known))
-        .catch((err) => console.warn(`[orchestrator] Could not save backup dates to ${datesFile()}: ${err.message}`));
+    // Temp file + rename: a crash mid-write must not leave a truncated file.
+    const tmp = `${file}.tmp`;
+    await writeFile(tmp, JSON.stringify(known))
+        .then(() => rename(tmp, file))
+        .catch((err) => console.warn(`[orchestrator] Could not save backup dates to ${file}: ${err.message}`));
     return known;
 }
 
@@ -992,6 +1003,9 @@ async function pruneHALocal() {
         supervisor.listBackups(),
         cli.listStrict(folder),
     ]);
+    // Remember dates/sizes before anything leaves HA, so retention can still
+    // order and verify the Proton copies of the backups deleted below.
+    await rememberBackups(haBackups, remoteEntries);
     // SIZE-VERIFIED slugs only: a remote file that exists but doesn't match the
     // HA backup's size is not proof the backup is safely offsite (H4).
     const protonSlugs = mirroredSlugs(haBackups, remoteEntries);
