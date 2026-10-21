@@ -87,6 +87,9 @@ let cachedFolderPath = null;
 // on retention and re-upload. Only one sync runs at a time.
 let syncing = false;
 
+/** Home Assistant's own name for its scheduled backups (English UI). */
+const DEFAULT_AUTOMATIC_PREFIX = 'Automatic backup';
+
 // Single source of truth for env-derived config (main.mjs and the UI both read
 // it through the exported wrappers below — there is no second copy).
 function cfg() {
@@ -98,7 +101,7 @@ function cfg() {
         keepAutomaticInHA: parseInt(process.env.KEEP_AUTOMATIC_IN_HA || '0', 10) || 0,
         keepAppInHA: parseInt(process.env.KEEP_APP_IN_HA || '0', 10) || 0,
         permanentlyDelete: process.env.PERMANENTLY_DELETE === 'true',
-        automaticNamePrefix: process.env.AUTOMATIC_NAME_PREFIX || 'Automatic backup',
+        automaticNamePrefix: process.env.AUTOMATIC_NAME_PREFIX || DEFAULT_AUTOMATIC_PREFIX,
         backupPassword: process.env.BACKUP_PASSWORD || undefined,
         stagingDir: process.env.STAGING_DIR || null,
     };
@@ -118,6 +121,7 @@ export function getConfig() {
         keepAutomaticInHA: c.keepAutomaticInHA,
         keepAppInHA: c.keepAppInHA,
         automaticNamePrefix: c.automaticNamePrefix,
+        permanentlyDelete: c.permanentlyDelete,
         backupPasswordSet: !!c.backupPassword,
         stagingDir: c.stagingDir,
     };
@@ -136,6 +140,7 @@ const EDITABLE_SETTINGS = {
     keepAutomaticInHA: { option: 'keep_automatic_in_ha', env: 'KEEP_AUTOMATIC_IN_HA', type: 'int' },
     keepAppInHA: { option: 'keep_app_in_ha', env: 'KEEP_APP_IN_HA', type: 'int' },
     automaticNamePrefix: { option: 'automatic_name_prefix', env: 'AUTOMATIC_NAME_PREFIX', type: 'string' },
+    permanentlyDelete: { option: 'permanently_delete', env: 'PERMANENTLY_DELETE', type: 'bool' },
 };
 
 /**
@@ -166,6 +171,13 @@ export function validateSettingsPatch(patch) {
             }
             options[spec.option] = n;
             env[spec.env] = String(n);
+        } else if (spec.type === 'bool') {
+            if (raw !== true && raw !== false && raw !== 'true' && raw !== 'false') {
+                throw new Error(`"${key}" must be true or false`);
+            }
+            const b = raw === true || raw === 'true';
+            options[spec.option] = b;
+            env[spec.env] = String(b);
         } else {
             const s = String(raw ?? '').trim();
             if (!s) throw new Error(`"${key}" must not be empty`);
@@ -357,7 +369,7 @@ export function isOurRemoteFile(name) {
  * @returns {boolean} true = automatic bucket; false = app bucket.
  */
 export function isAutomaticBackup(name, prefix) {
-    const p = (prefix ?? process.env.AUTOMATIC_NAME_PREFIX ?? 'Automatic backup').trim();
+    const p = (prefix ?? cfg().automaticNamePrefix).trim();
     if (!p) return false;
     return String(name ?? '').trim().toLowerCase().startsWith(p.toLowerCase());
 }
@@ -647,30 +659,6 @@ export function bucketCounts(haBackups) {
     return { automatic, app: ours.length - automatic, total: ours.length };
 }
 
-/**
- * Which local HA backups to delete to satisfy the manual HA retention limits.
- * Split into two INDEPENDENT buckets by name (isAutomaticBackup): keep the
- * newest `keepAutomatic` automatic backups and the newest `keepApp` app backups;
- * per bucket, candidates are the oldest ones beyond that keep (keep<=0 for a
- * bucket = delete NONE of it).
- *
- * SAFETY: only ever returns slugs that are CONFIRMED present in Proton
- * (`protonSlugs`), in EITHER bucket. A backup that has not been mirrored offsite
- * is NEVER returned, no matter how old — this function cannot select an
- * un-mirrored backup for deletion.
- *
- * @param {Array<{slug:string,name?:string,date?:string}>} haBackups
- * @param {Set<string>|string[]} protonSlugs - slugs confirmed present in Proton.
- *   Callers MUST pass a size-verified set (`mirroredSlugs`), never a set built
- *   from filenames alone.
- * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = delete none.
- * @param {number} keepApp - newest app backups to keep; <=0 = delete none.
- * @returns {string[]} slugs to delete (all of which are in protonSlugs).
- */
-export function selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
-    return planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp).toDelete;
-}
-
 /** Clear the last error shown in the UI. */
 export function clearError() {
     state.lastError = null;
@@ -682,9 +670,18 @@ export function clearError() {
  * which of those are safe to delete because they're confirmed in Proton
  * (`toDelete`), and how many were held back (`skippedNotInProton`).
  *
- * Single source of truth for the classification/ordering — `selectHALocalToPrune`
- * delegates here, so the runner's reported numbers can't drift from the decision.
- * SAFETY: `toDelete` is always a subset of `candidates` filtered by `protonSlugs`.
+ * Split into two INDEPENDENT buckets by name (isAutomaticBackup): per bucket,
+ * candidates are the oldest beyond that bucket's keep (keep<=0 = none of it).
+ *
+ * SAFETY: `toDelete` is always a subset of `candidates` filtered by
+ * `protonSlugs` — an un-mirrored backup is NEVER returned, in either bucket, no
+ * matter how old. Callers MUST pass a size-verified set (`mirroredSlugs`), never
+ * one built from filenames alone.
+ *
+ * @param {Array<{slug:string,name?:string,date?:string}>} haBackups
+ * @param {Set<string>|string[]} protonSlugs - slugs confirmed present in Proton.
+ * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = delete none.
+ * @param {number} keepApp - newest app backups to keep; <=0 = delete none.
  */
 export function planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
     const inProton = protonSlugs instanceof Set ? protonSlugs : new Set(protonSlugs || []);
@@ -841,7 +838,7 @@ async function syncBackupsToProton() {
     const buckets = bucketCounts(haBackups);
     if (buckets.total > 0 && buckets.automatic === 0) {
         console.warn(`[orchestrator] None of the ${buckets.total} Home Assistant backups match the automatic prefix `
-            + `"${process.env.AUTOMATIC_NAME_PREFIX || 'Automatic backup'}" — they are all being treated as "app" `
+            + `"${cfg().automaticNamePrefix}" — they are all being treated as "app" `
             + 'backups, so keep_automatic_* does nothing. Set automatic_name_prefix to match your backup names.');
     }
     console.debug(`[orchestrator] HA backups: ${haBackups.length}, Proton files: ${remoteEntries.length}, to upload: ${toUpload.length}`);

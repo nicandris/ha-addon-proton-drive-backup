@@ -14,6 +14,7 @@ console.debug = () => {};
 console.warn = () => {}; // mirroredSlugs warns about unverified remote copies
 
 const o = await import('../src/orchestrator.mjs');
+const toDelete = (...args) => o.planHALocalPrune(...args).toDelete;
 
 test('remoteNameFor builds "<name> (<slug>).tar"', () => {
     assert.equal(
@@ -176,10 +177,10 @@ test('H4: a size-mismatched remote copy is RE-UPLOADED and is NOT deletable loca
     assert.deepEqual(o.selectToUpload(ha, remote).map((x) => x.slug), ['partial']);
     // (2) never accepted as justification to delete the local copy
     const verified = o.mirroredSlugs(ha, remote);
-    assert.deepEqual(o.selectHALocalToPrune(ha, verified, 1, 1), []);
+    assert.deepEqual(toDelete(ha, verified, 1, 1), []);
     // Sanity: with a full-size remote copy the same backup IS prunable.
     const fixed = [remote[0], { ...remote[1], size: 100 * MB }];
-    assert.deepEqual(o.selectHALocalToPrune(ha, o.mirroredSlugs(ha, fixed), 1, 1), ['partial']);
+    assert.deepEqual(toDelete(ha, o.mirroredSlugs(ha, fixed), 1, 1), ['partial']);
 });
 
 // --- M2: path-traversal guard on the remote name ---------------------------
@@ -278,7 +279,7 @@ test('selectHALocalToPrune deletes oldest-first beyond keep, per bucket — ONLY
     const proton = new Set(['auto-new', 'auto-old', 'auto-mid', 'app-new', 'app-old']);
     // keep newest 1 automatic + 1 app → delete 2 oldest automatic + 1 oldest app.
     assert.deepEqual(
-        o.selectHALocalToPrune(ha, proton, 1, 1).sort(),
+        toDelete(ha, proton, 1, 1).sort(),
         ['app-old', 'auto-mid', 'auto-old'],
     );
 });
@@ -294,13 +295,13 @@ test('SAFETY: selectHALocalToPrune NEVER returns an un-mirrored slug, in EITHER 
     // 'auto-old' and 'app-old' are the oldest in their buckets & beyond keep, but
     // neither is mirrored → both must be kept.
     const proton = new Set(['auto-mid', 'auto-new', 'app-new']);
-    const del = o.selectHALocalToPrune(ha, proton, 1, 1);
+    const del = toDelete(ha, proton, 1, 1);
     assert.deepEqual(del.sort(), ['auto-mid']);
     assert.ok(!del.includes('auto-old'), 'must never delete an un-mirrored automatic backup');
     assert.ok(!del.includes('app-old'), 'must never delete an un-mirrored app backup');
     // With nothing mirrored, nothing is ever deletable in either bucket.
-    assert.deepEqual(o.selectHALocalToPrune(ha, new Set(), 1, 1), []);
-    assert.deepEqual(o.selectHALocalToPrune(ha, [], 1, 1), []);
+    assert.deepEqual(toDelete(ha, new Set(), 1, 1), []);
+    assert.deepEqual(toDelete(ha, [], 1, 1), []);
 });
 
 test('selectHALocalToPrune: keep<=0 per bucket deletes nothing there; accepts a Set or array', () => {
@@ -308,11 +309,11 @@ test('selectHALocalToPrune: keep<=0 per bucket deletes nothing there; accepts a 
         { slug: 'auto', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' },
         { slug: 'app', name: 'Add-on A', date: '2026-07-24T02:00:00.000Z' },
     ];
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], 0, 0), []);
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], -3, -3), []);
+    assert.deepEqual(toDelete(ha, ['auto', 'app'], 0, 0), []);
+    assert.deepEqual(toDelete(ha, ['auto', 'app'], -3, -3), []);
     // keep app bucket off (0) but prune the (single) automatic beyond keep... none beyond keep 0? keep<=0=none.
     // With keepAutomatic=0 nothing in automatic bucket is deletable; array form still honoured for app.
-    assert.deepEqual(o.selectHALocalToPrune(
+    assert.deepEqual(toDelete(
         [{ slug: 'app', name: 'Add-on A', date: '1' }, { slug: 'app2', name: 'Add-on B', date: '2' }],
         ['app', 'app2'], 0, 1,
     ), ['app']);
@@ -323,7 +324,7 @@ test('selectHALocalToPrune keeps everything when each bucket count <= its keep',
         { slug: 'auto', name: 'Automatic backup 1', date: '2026-07-24T01:00:00.000Z' },
         { slug: 'app', name: 'Add-on A', date: '2026-07-24T02:00:00.000Z' },
     ];
-    assert.deepEqual(o.selectHALocalToPrune(ha, ['auto', 'app'], 5, 5), []);
+    assert.deepEqual(toDelete(ha, ['auto', 'app'], 5, 5), []);
 });
 
 test('getConfig returns effective config with password only as a boolean', async () => {
@@ -347,6 +348,7 @@ test('getConfig returns effective config with password only as a boolean', async
             keepAutomaticInHA: 2,
             keepAppInHA: 0,
             automaticNamePrefix: 'Automatic backup',
+            permanentlyDelete: false,
             backupPasswordSet: true,
             stagingDir: null,
         });
@@ -403,6 +405,13 @@ test('P23: planHALocalPrune never deletes a backup with an unparseable date firs
     ];
     const plan = o.planHALocalPrune(ha, ['bad', 'old', 'new'], 2, 0);
     assert.deepEqual(plan.toDelete, ['old']);
+});
+
+test('validateSettingsPatch takes permanentlyDelete as a real boolean only', () => {
+    assert.deepEqual(o.validateSettingsPatch({ permanentlyDelete: true }),
+        { options: { permanently_delete: true }, env: { PERMANENTLY_DELETE: 'true' } });
+    assert.equal(o.validateSettingsPatch({ permanentlyDelete: 'false' }).options.permanently_delete, false);
+    assert.throws(() => o.validateSettingsPatch({ permanentlyDelete: 'yes' }), /true or false/);
 });
 
 test('validateSettingsPatch rejects bad numbers', () => {
@@ -527,6 +536,4 @@ test('planHALocalPrune reports candidates, deletions and skips consistently', ()
     assert.deepEqual(plan.candidates.map((b) => b.slug), ['auto-old', 'auto-mid']);
     assert.deepEqual(plan.toDelete, ['auto-mid']); // auto-old isn't mirrored
     assert.equal(plan.skippedNotInProton, 1);
-    // selectHALocalToPrune must stay consistent with the planner.
-    assert.deepEqual(o.selectHALocalToPrune(ha, new Set(['auto-mid']), 1, 0), plan.toDelete);
 });

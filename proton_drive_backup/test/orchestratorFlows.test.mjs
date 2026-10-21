@@ -20,7 +20,7 @@ const FOLDER = '/my-files/Home Assistant Backups';
 
 /** Fresh doubles + a fresh module registry for each test. */
 async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) {
-    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [], purgeKeep: [], notified: [], dismissed: 0 };
+    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [], purgeKeep: [], notified: [], dismissed: 0, options: [] };
     const staging = await mkdtemp(join(tmpdir(), 'pdb-flow-'));
 
     const supervisor = {
@@ -42,7 +42,7 @@ async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) 
         },
         uploadBackup: async (p) => { calls.restored.push(p); calls.restoredContent = await readFile(p, 'utf8'); return 'restored-slug'; },
         restoreBackup: async (slug) => ({ slug }),
-        setSelfOptions: async () => ({}),
+        setSelfOptions: async (changes) => { calls.options.push(changes); return {}; },
         notify: async (id, title, message) => { calls.notified.push(message); },
         dismissNotification: async () => { calls.dismissed++; },
     };
@@ -507,4 +507,24 @@ test('P23: restore never uploads a stale staging file of the same name', async (
     await writeFile(join(staging, 'Automatic backup 1 (a1).tar'), 'stale');
     await o.restoreToHA('Automatic backup 1 (a1).tar');
     assert.equal(calls.restoredContent, 'fresh');
+});
+
+test('the panel\'s log level is saved as the add-on option, not just applied', async () => {
+    const { calls } = await load({});
+    process.env.PORT = '0';
+    const ingress = await import(`../src/ingress.mjs?t=${Math.random().toString(36).slice(2)}`);
+    const server = ingress.startIngressServer();
+    await new Promise((r) => server.once('listening', r));
+    try {
+        const r = await fetch(`http://127.0.0.1:${server.address().port}/api/log-level`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ level: 'warning' }),
+        });
+        assert.equal(r.status, 200);
+        assert.equal((await r.json()).persisted, true);
+        assert.deepEqual(calls.options, [{ log_level: 'warning' }]);
+    } finally {
+        server.closeAllConnections?.();
+        server.close();
+        (await import('../src/logger.mjs')).setLogLevel('error');
+    }
 });

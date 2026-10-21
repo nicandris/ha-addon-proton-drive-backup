@@ -1,11 +1,9 @@
 /**
- * The Web UI is a single inline HTML+JS string built inside a template literal in
- * ingress.mjs. `node --check src/ingress.mjs` validates the OUTER file only — it
- * cannot see a syntax error inside the emitted page, and 0.4.3 shipped exactly
- * that: a `\n` written inside the template literal became a REAL newline in the
- * browser's single-quoted string, so the page threw
+ * The Web UI is one HTML file with an inline script (src/ui.html, served by
+ * ingress.mjs). Nothing else parses that script before a browser does — and
+ * 0.4.3 shipped a page whose script threw
  * "Uncaught SyntaxError: Invalid or unexpected token" and never rendered
- * (everything stayed on "Loading…").
+ * (everything stayed on "Loading…"), back when it lived in a template literal.
  *
  * These tests compile the rendered page's script the way a browser would.
  */
@@ -29,7 +27,7 @@ test('the inline page script parses (catches unterminated strings / bad escapes)
 });
 
 test('the page still wires the expected controls', () => {
-    for (const id of ['statusCard', 'statsCard', 'settingsCard', 'syncNow', 'createBackup', 'pruneHA', 'saveSettings', 'backupRows']) {
+    for (const id of ['statusCard', 'statsCard', 'settingsCard', 'syncNow', 'createBackup', 'pruneHA', 'saveSettings', 'backupRows', 'setPermDelete']) {
         assert.ok(html.includes(`id="${id}"`) || scripts[0].includes(`'${id}'`), `missing ${id}`);
     }
     assert.ok(scripts[0].includes('function esc('), 'escaping helper missing');
