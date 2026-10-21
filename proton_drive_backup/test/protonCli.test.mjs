@@ -84,6 +84,17 @@ test('login() resolves {ok:false, error} on nonzero exit', async () => {
 
 // --- list(): the explicitly-unverified JSON shape. Parse defensively. ---
 
+test('P22: a failed login never puts the sign-in URL in its error text', async () => {
+    clearFake();
+    process.env.FAKE_LOGIN_CODE = '1';
+    process.env.FAKE_LOGIN_STDERR = 'session expired';
+    const r = await cli.login({ onUrl: () => {} });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /session expired/);
+    assert.doesNotMatch(r.error, /account\.proton\.me/);
+    assert.match(r.error, /<sign-in link>/);
+});
+
 test('list() parses a bare array', async () => {
     clearFake();
     process.env.FAKE_LIST_JSON = JSON.stringify([

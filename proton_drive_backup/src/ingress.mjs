@@ -28,9 +28,18 @@ const state = {
     loginError: null, // last sign-in failure text
 };
 
+/** Every body this API takes is a few hundred bytes of JSON. */
+const MAX_BODY_BYTES = 64 * 1024;
+
 async function readBody(req) {
     const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
+    let size = 0;
+    for await (const chunk of req) {
+        size += chunk.length;
+        // Unbounded, any caller could make us buffer an arbitrary amount of memory.
+        if (size > MAX_BODY_BYTES) throw Object.assign(new Error('request body too large'), { status: 413 });
+        chunks.push(chunk);
+    }
     if (chunks.length === 0) return {};
     try {
         return JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -701,7 +710,7 @@ export function startIngressServer() {
     const server = createServer((req, res) => {
         handle(req, res).catch((err) => {
             console.error(`[ingress] Unhandled error: ${err.message}`);
-            if (!res.headersSent) sendJson(res, 500, { ok: false, error: err.message });
+            if (!res.headersSent) sendJson(res, err.status || 500, { ok: false, error: err.message });
         });
     });
 

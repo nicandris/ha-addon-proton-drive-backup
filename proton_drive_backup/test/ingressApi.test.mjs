@@ -168,3 +168,9 @@ test('a request from another host is refused before any route runs', async (t) =
     const s = await fetch(`${url}/api/status`);
     assert.equal(s.status, 403, 'status (and its loginUrl) must not leak either');
 });
+
+test('P22: an oversized request body is refused with 413', async () => {
+    const r = await post('/api/settings', { driveFolder: 'x'.repeat(100 * 1024) });
+    assert.equal(r.status, 413);
+    assert.equal((await r.json()).ok, false);
+});

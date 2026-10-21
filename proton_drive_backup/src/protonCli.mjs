@@ -210,6 +210,9 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
         let urlSent = false;
         let settled = false;
         const urlRe = /https:\/\/account\.proton\.me\/\S+/;
+        // The sign-in link is a live credential-in-waiting: keep it out of the
+        // error text, which is logged and shown in the panel.
+        const redact = (text) => text.replace(new RegExp(urlRe.source, 'g'), '<sign-in link>');
 
         const timer = timeoutMs > 0 ? setTimeout(() => {
             if (settled) return;
@@ -246,7 +249,7 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
                 console.debug('[protonCli] login: completed OK');
                 resolve({ ok: true });
             } else {
-                const error = errText({ stdout, stderr }, `auth login exited ${code}`);
+                const error = redact(errText({ stdout, stderr }, `auth login exited ${code}`));
                 console.debug(`[protonCli] login: failed — ${error}`);
                 resolve({ ok: false, error });
             }
