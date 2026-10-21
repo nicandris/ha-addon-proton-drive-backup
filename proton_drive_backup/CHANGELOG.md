@@ -18,6 +18,13 @@
   ingress proxy are now refused.
 
 
+### Added
+
+- **Home Assistant notifies you when backups stop.** A failed sync, or a Proton
+  session that needs signing in again, now raises a notification in Home
+  Assistant; the next successful sync clears it. This needs the
+  `homeassistant_api` permission, which the add-on now requests.
+
 ### Fixed
 
 - **Retention no longer trashes your newest backups.** Proton retention ordered

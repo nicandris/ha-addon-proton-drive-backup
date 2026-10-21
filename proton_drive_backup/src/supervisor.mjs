@@ -297,6 +297,30 @@ export async function uploadBackup(srcPath, { timeoutMs = LONG_CALL_TIMEOUT_MS }
     });
 }
 
+/**
+ * Call a Home Assistant Core service through the Supervisor's Core API proxy
+ * (needs `homeassistant_api: true`). Core answers with its own JSON, not the
+ * Supervisor envelope, so only the HTTP status decides success.
+ */
+async function callService(domain, service, data) {
+    const resp = await fetch(`${BASE_URL}/core/api/services/${domain}/${service}`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+    });
+    if (!resp.ok) throw new Error(`Home Assistant ${domain}.${service} failed: HTTP ${resp.status}`);
+}
+
+/** Show (or replace) a persistent notification in Home Assistant. */
+export function notify(notificationId, title, message) {
+    return callService('persistent_notification', 'create', { notification_id: notificationId, title, message });
+}
+
+/** Remove a persistent notification shown by `notify`. */
+export function dismissNotification(notificationId) {
+    return callService('persistent_notification', 'dismiss', { notification_id: notificationId });
+}
+
 export async function deleteBackup(slug) {
     await supervisorJson('DELETE', `/backups/${slug}`);
     console.debug(`[supervisor] deleteBackup: ${slug} deleted`);

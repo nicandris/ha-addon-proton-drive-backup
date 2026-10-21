@@ -147,6 +147,11 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 - **Delete** — remove a backup from Proton Drive (moves it to the Drive trash, or deletes it for good with `permanently_delete`).
 - Change the **log level** at runtime.
 
+When a sync fails, or Proton Drive needs you to sign in again, the app also
+raises a **Home Assistant notification**, so you find out without opening the
+panel. It is cleared automatically by the next successful sync. (This is why the
+app asks for access to the Home Assistant API.)
+
 ## Security
 
 > **Backups made before 0.5.0 contain your Proton session.** The Proton CLI keeps

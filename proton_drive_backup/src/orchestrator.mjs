@@ -1018,6 +1018,31 @@ async function mirrorAndPrune() {
     return failures;
 }
 
+const ALERT_ID = 'proton_drive_backup';
+let alertShown = null; // the message currently notified, so it isn't re-sent each sync
+
+/**
+ * Raise a Home Assistant notification when a sync failed or the add-on needs a
+ * sign-in, and clear it once a sync succeeds. Without it, a broken backup was
+ * only visible to someone who happened to open the panel. Best-effort.
+ */
+async function updateAlert() {
+    const problem = state.needsLogin
+        ? 'Proton Drive is not connected, so backups are not being copied. Open the Proton Backup panel and press **Connect**.'
+        : (state.lastError ? `The last sync to Proton Drive failed: ${state.lastError}` : null);
+    try {
+        if (problem && problem !== alertShown) {
+            await supervisor.notify(ALERT_ID, 'Proton Drive Backup', problem);
+            alertShown = problem;
+        } else if (!problem && alertShown) {
+            await supervisor.dismissNotification(ALERT_ID);
+            alertShown = null;
+        }
+    } catch (err) {
+        console.warn(`[orchestrator] Could not update the Home Assistant notification: ${err.message}`);
+    }
+}
+
 export async function runSync() {
     if (syncing) {
         console.warn('[orchestrator] runSync: a sync is already running — skipping this trigger');
@@ -1036,6 +1061,8 @@ export async function runSync() {
         } catch (err) {
             state.lastError = describeError(err);
             console.error(`[orchestrator] Sync failed: ${state.lastError}`);
+        } finally {
+            await updateAlert(); // also after the early returns above
         }
     });
 }
@@ -1076,6 +1103,8 @@ export async function createBackupNow() {
         } catch (err) {
             state.lastError = describeError(err);
             console.error(`[orchestrator] Manual backup failed: ${state.lastError}`);
+        } finally {
+            await updateAlert(); // also after the early returns above
         }
     });
 }

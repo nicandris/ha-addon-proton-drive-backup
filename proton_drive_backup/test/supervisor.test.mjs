@@ -153,3 +153,15 @@ test('P11: a long Supervisor call that never answers times out instead of hangin
     routes.set('POST /backups/s/restore/full', { status: 200, body: { result: 'ok', data: {} }, delayMs: 1500 });
     await assert.rejects(() => supervisor.restoreBackup('s', undefined, { timeoutMs: 200 }), /timed out/);
 });
+
+test('P15: notify/dismissNotification call the Core persistent_notification service', async () => {
+    routes.set('POST /core/api/services/persistent_notification/create', { status: 200, body: [] });
+    routes.set('POST /core/api/services/persistent_notification/dismiss', { status: 200, body: [] });
+    await supervisor.notify('pdb', 'Title', 'Body');
+    const created = seen.find((r) => r.key === 'POST /core/api/services/persistent_notification/create');
+    assert.deepEqual(created.body, { notification_id: 'pdb', title: 'Title', message: 'Body' });
+    assert.equal(created.auth, 'Bearer test-token');
+    await supervisor.dismissNotification('pdb');
+    routes.set('POST /core/api/services/persistent_notification/create', { status: 401, body: {} });
+    await assert.rejects(() => supervisor.notify('pdb', 't', 'm'), /HTTP 401/);
+});

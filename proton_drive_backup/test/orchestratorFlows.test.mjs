@@ -19,7 +19,7 @@ const FOLDER = '/my-files/Home Assistant Backups';
 
 /** Fresh doubles + a fresh module registry for each test. */
 async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) {
-    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [], purgeKeep: [] };
+    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [], purgeKeep: [], notified: [], dismissed: 0 };
     const staging = await mkdtemp(join(tmpdir(), 'pdb-flow-'));
 
     const supervisor = {
@@ -42,6 +42,8 @@ async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) 
         uploadBackup: async (p) => { calls.restored.push(p); return 'restored-slug'; },
         restoreBackup: async (slug) => ({ slug }),
         setSelfOptions: async () => ({}),
+        notify: async (id, title, message) => { calls.notified.push(message); },
+        dismissNotification: async () => { calls.dismissed++; },
     };
     const cli = {
         isConnected: async () => {
@@ -470,4 +472,26 @@ test('P14: the restore route answers 409 (not started:true) while busy', async (
         server.closeAllConnections?.();
         server.close();
     }
+});
+
+// --- Home Assistant alerting (P15) ---------------------------------------------
+
+test('P15: a failed sync raises one HA notification, a good sync clears it', async () => {
+    const fail = { upload: new Error('quota exceeded') };
+    const { o, calls } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')], fail });
+    await o.runSync();
+    assert.equal(calls.notified.length, 1);
+    assert.match(calls.notified[0], /quota exceeded/);
+    await o.runSync(); // same failure again: not re-sent
+    assert.equal(calls.notified.length, 1);
+    delete fail.upload;
+    await o.runSync();
+    assert.equal(calls.dismissed, 1, 'the notification is cleared once a sync succeeds');
+});
+
+test('P15: needing a sign-in raises an HA notification', async () => {
+    const { o, calls } = await load({ fail: { notConnected: true } });
+    await o.runSync();
+    assert.equal(calls.notified.length, 1);
+    assert.match(calls.notified[0], /Connect/);
 });
