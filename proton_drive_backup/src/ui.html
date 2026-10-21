@@ -383,7 +383,8 @@ async function act(path, name, confirmMsg, startedMsg) {
 document.getElementById('syncNow').onclick = async function(){
   var btn = this; btn.disabled = true; btn.textContent = 'Syncing…';
   try {
-    await fetch('api/sync-now', { method: 'POST' });
+    var r = await fetch('api/sync-now', { method: 'POST' });
+    if (r.status === 409) alert((await r.json()).error);
   } catch (e) { alert('Error: ' + e); }
   refresh();
 };
@@ -391,7 +392,8 @@ document.getElementById('createBackup').onclick = async function(){
   if (!confirm('Create a new Home Assistant backup now and upload it to Proton?')) return;
   var btn = this; btn.disabled = true; btn.textContent = 'Working…';
   try {
-    await fetch('api/create-backup', { method: 'POST' });
+    var r = await fetch('api/create-backup', { method: 'POST' });
+    if (r.status === 409) alert((await r.json()).error);
   } catch (e) { alert('Error: ' + e); }
   refresh();
 };

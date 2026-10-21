@@ -133,7 +133,8 @@ test('sync-now / create-backup return immediately rather than blocking on the CL
     for (const p of ['/api/sync-now', '/api/create-backup']) {
         const t0 = Date.now();
         const r = await post(p);
-        assert.equal(r.status, 200, p);
+        // 409 = the first call's sync is still running: also an immediate answer.
+        assert.ok([200, 409].includes(r.status), `${p}: ${r.status}`);
         assert.ok(Date.now() - t0 < 1000, `${p} blocked`);
     }
 });

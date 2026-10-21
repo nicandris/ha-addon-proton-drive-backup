@@ -472,8 +472,9 @@ test('P14: the restore route answers 409 (not started:true) while busy', async (
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}),
     });
     try {
-        await post('/api/sync-now'); // takes the lock, held by connectGate
-        for (const [path, body] of [['/api/restore', { name: 'x (s1).tar' }], ['/api/delete', { name: 'x (s1).tar' }], ['/api/prune-ha']]) {
+        assert.equal((await post('/api/sync-now')).status, 200); // takes the lock, held by connectGate
+        for (const [path, body] of [['/api/restore', { name: 'x (s1).tar' }], ['/api/delete', { name: 'x (s1).tar' }], ['/api/prune-ha'],
+                                    ['/api/sync-now'], ['/api/create-backup']]) {
             const r = await post(path, body);
             assert.equal(r.status, 409, path);
             assert.equal((await r.json()).ok, false, path);

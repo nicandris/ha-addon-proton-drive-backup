@@ -380,6 +380,8 @@ async function handle(req, res) {
     }
 
     if (method === 'POST' && path === '/api/create-backup') {
+        // Would otherwise answer "started" and then silently skip.
+        if (orchestrator.getStatus().syncing) return sendBusy(res);
         invalidateSnapshot();
         orchestrator.createBackupNow()
             .catch((err) => console.error(`[ingress] create-backup: ${err.message}`))
@@ -412,7 +414,8 @@ async function handle(req, res) {
 
     if (method === 'POST' && path === '/api/sync-now') {
         // Upload existing HA backups now. Kick off but don't block the response
-        // on full completion.
+        // on full completion (409 if something is already running).
+        if (orchestrator.getStatus().syncing) return sendBusy(res);
         invalidateSnapshot();
         orchestrator.runSync()
             .catch((err) => console.error(`[ingress] sync-now: ${err.message}`))
