@@ -166,8 +166,9 @@ export async function selfInfo() {
  * set missing any required key ("Missing option 'log_level'"), so the change is
  * merged over the current options first. It validates against `config.yaml`'s
  * schema, so an invalid value is rejected here rather than silently applied.
- * `self` is the documented way for an add-on to address itself; if a Supervisor
- * build rejects the POST we fall back to the resolved slug.
+ * `self` is the documented way for an add-on to address itself, and the only
+ * one the `backup` role allows (`/addons/self/*` bypasses role checks;
+ * `/addons/<slug>/options` would need `manager`), so there is no slug fallback.
  *
  * @param {Record<string, unknown>} changes - only the keys being changed.
  */
@@ -175,15 +176,7 @@ export async function setSelfOptions(changes) {
     console.debug(`[supervisor] setSelfOptions: ${Object.keys(changes).join(', ')}`);
     const info = await selfInfo();
     const options = { ...info?.options, ...changes };
-    try {
-        return await supervisorJson('POST', '/addons/self/options', { options });
-    } catch (err) {
-        // Fall back to the explicit slug (e.g. `a1b2c3d4_proton_drive_backup`).
-        const slug = info?.slug;
-        if (!slug) throw err;
-        console.debug(`[supervisor] setSelfOptions: retrying with slug ${slug}`);
-        return supervisorJson('POST', `/addons/${slug}/options`, { options });
-    }
+    return supervisorJson('POST', '/addons/self/options', { options });
 }
 
 /**

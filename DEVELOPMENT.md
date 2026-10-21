@@ -604,18 +604,22 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
 
 ## Deliberate decisions (reviewed, not oversights)
 
-### `hassio_role: manager` is required — don't narrow it to `backup`
-The add-on calls more than the backup endpoints:
+### `hassio_role: backup` is enough — don't widen it to `manager`
+Checked against the Supervisor's `api/middleware/security.py` (unchanged since at
+least 2023.01): the `backup` role allows `/backups.*` and every `/.+/info` path,
+and `/addons/self/<anything but security|update>` bypasses role checks for every
+add-on.
 
-| Endpoint | Why |
+| Endpoint | Allowed by |
 | --- | --- |
-| `GET /backups`, `POST /backups/new/full`, `GET /backups/{slug}/download`, `POST /backups/new/upload`, `DELETE /backups/{slug}`, `POST /backups/{slug}/restore/full` | mirror, create-on-demand, restore, clean-up |
-| `GET /host/info` | free-disk figure in the statistics card |
-| `GET /addons/self/info`, `POST /addons/self/options` | the Web UI's editable settings (0.4.2) |
+| `GET /backups`, `POST /backups/new/full`, `GET /backups/{slug}/download`, `POST /backups/new/upload`, `DELETE /backups/{slug}`, `POST /backups/{slug}/restore/full` | `backup` role (`/backups.*`) |
+| `GET /host/info`, `GET /addons/self/info` | `backup` role (`/.+/info`) |
+| `POST /addons/self/options` | API bypass (`/addons/self/…`) |
+| `POST /core/api/services/persistent_notification/*` | `homeassistant_api: true` (not a role) |
 
-The narrower `backup` role covers only the first row, so dropping to it would break
-the statistics card and settings saving. `manager` stays, and this table is the
-justification — re-check it if those features change.
+So never address the add-on by slug (`/addons/<slug>/…` needs `manager`; the
+old `setSelfOptions` fallback did, and was removed in 0.5.0). Re-check this
+table when adding a Supervisor call.
 
 ### The CLI timeout kills the process, not the process group
 `protonCli.run()` uses `child.kill('SIGKILL')` on timeout. Killing a whole process

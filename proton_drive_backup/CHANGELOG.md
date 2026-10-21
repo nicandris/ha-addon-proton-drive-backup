@@ -16,6 +16,8 @@
   or delete backups, or connect the add-on to *its own* Proton account and
   receive your backups. Requests that don't come through Home Assistant's
   ingress proxy are now refused.
+- **Narrower Supervisor permission.** The add-on now asks for the `backup` role
+  instead of `manager`, which covers everything it uses.
 
 
 ### Added

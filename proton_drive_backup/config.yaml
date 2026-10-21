@@ -20,10 +20,13 @@ backup_exclude:
   - proton-drive-cli
   - proton-drive-cli/*
 hassio_api: true
+# `backup` is enough: it allows /backups* and every */info call (incl.
+# /host/info); /addons/self/options bypasses role checks altogether
+# (Supervisor api/middleware/security.py). `manager` would add far more.
+hassio_role: backup
 # Only to raise/clear a persistent notification when a sync fails or a sign-in
 # is needed (Core API: persistent_notification.create / .dismiss).
 homeassistant_api: true
-hassio_role: manager
 ingress: true
 panel_icon: mdi:cloud-lock
 panel_title: Proton Backup
