@@ -35,6 +35,20 @@ jobs:
         working-directory: proton_drive_backup
         run: npm test
 
+  # The release (which needs this) only runs after merge; catch a version bump
+  # without its CHANGELOG section on the pull request instead.
+  changelog:
+    name: CHANGELOG covers the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: config.yaml version has a CHANGELOG section
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version:' proton_drive_backup/config.yaml | tr -d ' "' | cut -d: -f2)
+          grep -qx "## $version" proton_drive_backup/CHANGELOG.md \
+            || { echo "::error::no '## $version' section in proton_drive_backup/CHANGELOG.md"; exit 1; }
+
   lint:
     name: Lint add-on config
     runs-on: ubuntu-latest

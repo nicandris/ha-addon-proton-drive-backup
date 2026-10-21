@@ -3,6 +3,11 @@ version: "0.5.0"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive-backup
+# Prebuilt images are published by .github/workflows/release.yml. Leave this
+# commented until a release has pushed BOTH arches and the GHCR packages are
+# public — with `image:` set, the Supervisor pulls instead of building, so an
+# image that doesn't exist yet breaks every install and update.
+# image: ghcr.io/nicandris/{arch}-proton-drive-backup
 arch:
   - amd64
   - aarch64

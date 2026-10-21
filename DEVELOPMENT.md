@@ -519,7 +519,10 @@ container tmp dir.
 The version lives in exactly one place: `proton_drive_backup/config.yaml`'s
 `version:` field. `package.json` has no `version`; the `Dockerfile` has no
 version LABEL. To release: edit `config.yaml`'s `version:`, add a `CHANGELOG.md`
-entry, commit, push.
+entry (CI's `changelog` job fails a PR without one), merge. Once **CI is green**
+on that main commit, `release.yml` (a `workflow_run` of CI) tags `v<version>`,
+creates the release and pushes `ghcr.io/<owner>/{amd64,aarch64}-proton-drive-backup:<version>`.
+`config.yaml`'s `image:` stays commented until those images exist and are public.
 
 ⚠️ **HA only offers an update when the version increases.** Going *backwards*
 means HA won't show an update — the user must uninstall/reinstall or use
