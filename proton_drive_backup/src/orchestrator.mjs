@@ -194,7 +194,10 @@ export async function applySettings(patch) {
     // has changed and the error goes back to the UI.
     await supervisor.setSelfOptions(options);
     const folderChanged = 'DRIVE_FOLDER' in env && env.DRIVE_FOLDER !== process.env.DRIVE_FOLDER;
+    const intervalChanged = 'BACKUP_INTERVAL_HOURS' in env
+        && env.BACKUP_INTERVAL_HOURS !== process.env.BACKUP_INTERVAL_HOURS;
     for (const [k, v] of Object.entries(env)) process.env[k] = v;
+    if (intervalChanged) scheduleNextSync();
     if (folderChanged) {
         // Drop the resolved-folder cache so the new folder is created/looked up.
         cachedFolderKey = null;
@@ -693,8 +696,41 @@ export function planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp)
     return { candidates, toDelete, skippedNotInProton: candidates.length - toDelete.length };
 }
 
-export function setNextSyncEpoch(epoch) {
-    state.nextSyncEpoch = epoch;
+// setTimeout's ceiling: a longer delay (> ~596 h) silently becomes 1 ms, which
+// used to run syncs back to back forever.
+const MAX_TIMER_MS = 2 ** 31 - 1;
+let syncTimer = null;
+
+/**
+ * (Re)arm the single sync timer. Chained timeouts rather than setInterval, so
+ * the next sync is always one interval after the last one FINISHED (no drift
+ * from `nextSyncEpoch`) and a changed interval takes effect at once.
+ *
+ * @param {number} [delayMs] - default: the configured interval; with an
+ *   interval of 0 nothing further is scheduled.
+ */
+export function scheduleNextSync(delayMs) {
+    clearTimeout(syncTimer);
+    syncTimer = null;
+    let delay = delayMs;
+    if (delay == null) {
+        const hours = cfg().intervalHours;
+        if (hours <= 0) {
+            state.nextSyncEpoch = null;
+            return;
+        }
+        delay = hours * 3600 * 1000;
+    }
+    delay = Math.min(delay, MAX_TIMER_MS);
+    state.nextSyncEpoch = Date.now() + delay;
+    syncTimer = setTimeout(() => {
+        syncTimer = null;
+        runSync()
+            .catch((err) => console.error(`[orchestrator] Scheduled sync error: ${err.message}`))
+            // A settings change during the sync may already have re-armed it.
+            .finally(() => { if (!syncTimer) scheduleNextSync(); });
+    }, delay);
+    syncTimer.unref?.(); // the ingress server keeps the process alive
 }
 
 export function getStatus() {

@@ -44,7 +44,7 @@ async function load({ ha = [], remote = [], fail = {} } = {}) {
         setSelfOptions: async () => ({}),
     };
     const cli = {
-        isConnected: async () => fail.notConnected !== true,
+        isConnected: async () => { calls.connectChecks = (calls.connectChecks || 0) + 1; return fail.notConnected !== true; },
         ensureFolder: async () => FOLDER,
         list: async () => remote,
         listStrict: async () => { if (fail.listStrict) throw fail.listStrict; return remote; },
@@ -319,4 +319,66 @@ test('P9: pruneProton refuses to prune when the HA listing fails', async () => {
     });
     await assert.rejects(() => o.pruneProton(), /Supervisor unreachable/);
     assert.deepEqual(calls.trashed, []);
+});
+
+// --- scheduling (P6, P7) -----------------------------------------------------
+
+const HOUR = 3600 * 1000;
+/** Let the runSync started by a fired timer finish (it does real fs I/O). */
+async function settle(o) {
+    for (let i = 0; i < 200 && o.getStatus().syncing; i++) await new Promise((r) => setImmediate(r));
+    for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+}
+
+test('P6: an interval beyond the timer limit never turns into back-to-back syncs', async () => {
+    process.env.BACKUP_INTERVAL_HOURS = '1000'; // > 596 h: setInterval fired every 1 ms
+    const { o, calls } = await load({});
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+    try {
+        o.scheduleNextSync();
+        assert.ok(o.getStatus().nextSyncEpoch <= 2 ** 31 - 1, 'clamped to the timer limit');
+        mock.timers.tick(1000);
+        await settle(o);
+        assert.equal(calls.connectChecks || 0, 0, 'no sync may fire early');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('P6/P7: each sync schedules the next one interval after it finished', async () => {
+    process.env.BACKUP_INTERVAL_HOURS = '6';
+    const { o, calls } = await load({});
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+    try {
+        o.scheduleNextSync(5000);
+        assert.equal(o.getStatus().nextSyncEpoch, 5000);
+        mock.timers.tick(5000);
+        await settle(o);
+        assert.equal(calls.connectChecks, 1, 'the first sync ran');
+        assert.equal(o.getStatus().nextSyncEpoch, 5000 + 6 * HOUR);
+        mock.timers.tick(6 * HOUR);
+        await settle(o);
+        assert.equal(calls.connectChecks, 2, 'and the next one, an interval later');
+    } finally {
+        mock.timers.reset();
+    }
+});
+
+test('P7: changing the interval in the panel reschedules the timer', async () => {
+    process.env.BACKUP_INTERVAL_HOURS = '24';
+    const { o, calls } = await load({});
+    mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+    try {
+        o.scheduleNextSync();
+        assert.equal(o.getStatus().nextSyncEpoch, 24 * HOUR);
+        await o.applySettings({ intervalHours: 2 });
+        assert.equal(o.getStatus().nextSyncEpoch, 2 * HOUR);
+        mock.timers.tick(2 * HOUR);
+        await settle(o);
+        assert.equal(calls.connectChecks, 1, 'the sync ran on the NEW interval');
+        await o.applySettings({ intervalHours: 0 });
+        assert.equal(o.getStatus().nextSyncEpoch, null, 'interval 0 = no scheduled sync');
+    } finally {
+        mock.timers.reset();
+    }
 });

@@ -33,6 +33,12 @@
   the oldest good copy instead.
 - **Proton retention is skipped if Home Assistant can't be asked for backup
   dates,** instead of pruning by the wrong dates.
+- **A very long `backup_interval_hours` no longer syncs non-stop.** Above 596
+  hours the timer overflowed and fired every millisecond; the option is now
+  capped at 596.
+- **Changing the sync interval in the panel takes effect at once,** and the
+  "Next sync" time no longer drifts: the next sync is scheduled one interval
+  after the previous one finished.
 
 ## 0.4.15
 
