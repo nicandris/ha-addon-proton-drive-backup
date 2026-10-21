@@ -389,6 +389,22 @@ test('validateSettingsPatch refuses the backup password and unknown keys', () =>
     assert.throws(() => o.validateSettingsPatch({ stagingDir: '/tmp' }), /not an editable setting/);
 });
 
+test('P23: validateSettingsPatch rejects numbers with trailing junk ("1O")', () => {
+    assert.throws(() => o.validateSettingsPatch({ keepAppInProton: '1O' }), /whole number/);
+    assert.throws(() => o.validateSettingsPatch({ keepAppInProton: '3 days' }), /whole number/);
+    assert.equal(o.validateSettingsPatch({ keepAppInProton: ' 3 ' }).options.keep_app_in_proton, 3);
+});
+
+test('P23: planHALocalPrune never deletes a backup with an unparseable date first', () => {
+    const ha = [
+        { slug: 'bad', name: 'Automatic backup ?', date: 'not a date' },
+        { slug: 'old', name: 'Automatic backup 1', date: '2026-07-01T00:00:00.000Z' },
+        { slug: 'new', name: 'Automatic backup 2', date: '2026-07-02T00:00:00.000Z' },
+    ];
+    const plan = o.planHALocalPrune(ha, ['bad', 'old', 'new'], 2, 0);
+    assert.deepEqual(plan.toDelete, ['old']);
+});
+
 test('validateSettingsPatch rejects bad numbers', () => {
     for (const bad of [-1, 1.5, 'abc', '', null]) {
         assert.throws(() => o.validateSettingsPatch({ keepAppInProton: bad }), /whole number/, `value ${bad}`);

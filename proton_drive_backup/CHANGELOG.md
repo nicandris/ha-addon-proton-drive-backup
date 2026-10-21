@@ -19,7 +19,6 @@
 - **Narrower Supervisor permission.** The add-on now asks for the `backup` role
   instead of `manager`, which covers everything it uses.
 
-
 ### Added
 
 - **Home Assistant notifies you when backups stop.** A failed sync, or a Proton
@@ -68,6 +67,10 @@
   A restore started during a sync answered "Restore started" and then did
   nothing; Delete and the local clean-up ran straight through a running sync.
   All of them now wait their turn and tell you to try again.
+- **A typo in a keep-count is rejected** instead of half-read: `1O` used to save
+  as `1`.
+- **Restore always uses the freshly downloaded archive,** never a leftover file
+  with the same name.
 
 ## 0.4.15
 

@@ -565,7 +565,7 @@ async function refresh() {
 var lastBackups = [];
 var sortKey = 'date', sortDir = -1; // newest first
 function sortValue(b) {
-  if (sortKey === 'date') return new Date(b.date || 0).getTime();
+  if (sortKey === 'date') return new Date(b.date || 0).getTime() || 0; // NaN breaks the sort
   if (sortKey === 'size') return Number(b.size) || 0;
   return String(b.name || '').toLowerCase();
 }

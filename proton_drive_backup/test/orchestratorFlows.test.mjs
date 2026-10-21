@@ -11,7 +11,8 @@
  */
 import { test, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, readdir, readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,7 +40,7 @@ async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) 
             if (fail.createBackup) throw fail.createBackup;
             return 'new-slug';
         },
-        uploadBackup: async (p) => { calls.restored.push(p); return 'restored-slug'; },
+        uploadBackup: async (p) => { calls.restored.push(p); calls.restoredContent = await readFile(p, 'utf8'); return 'restored-slug'; },
         restoreBackup: async (slug) => ({ slug }),
         setSelfOptions: async () => ({}),
         notify: async (id, title, message) => { calls.notified.push(message); },
@@ -58,7 +59,12 @@ async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) 
             calls.uploads.push(local.split('/').pop());
             if (fail.upload) throw fail.upload;
         },
-        downloadPath: async () => {},
+        downloadPath: async (remote, folder) => {
+            // Like a CLI that won't overwrite: writes the fresh copy only if
+            // nothing is in the way.
+            const dest = join(folder, remote.split('/').pop());
+            if (!existsSync(dest)) await writeFile(dest, 'fresh');
+        },
         trash: async (p) => { calls.trashed.push(p.replace(FOLDER + '/', '')); },
         trashedUids: async (name) => (trashBefore[name] || []),
         deleteFromTrash: async (name, opts) => { calls.purged.push(name); calls.purgeKeep.push(opts?.keep ?? null); return 1; },
@@ -494,4 +500,11 @@ test('P15: needing a sign-in raises an HA notification', async () => {
     await o.runSync();
     assert.equal(calls.notified.length, 1);
     assert.match(calls.notified[0], /Connect/);
+});
+
+test('P23: restore never uploads a stale staging file of the same name', async () => {
+    const { o, calls, staging } = await load({});
+    await writeFile(join(staging, 'Automatic backup 1 (a1).tar'), 'stale');
+    await o.restoreToHA('Automatic backup 1 (a1).tar');
+    assert.equal(calls.restoredContent, 'fresh');
 });

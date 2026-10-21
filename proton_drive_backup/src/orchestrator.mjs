@@ -158,7 +158,9 @@ export function validateSettingsPatch(patch) {
         const spec = EDITABLE_SETTINGS[key];
         if (!spec) throw new Error(`"${key}" is not an editable setting`);
         if (spec.type === 'int') {
-            const n = typeof raw === 'number' ? raw : parseInt(String(raw).trim(), 10);
+            // Digits only: parseInt("1O") is 1, which silently set keep=1.
+            const text = String(raw).trim();
+            const n = typeof raw === 'number' ? raw : (/^\d+$/.test(text) ? Number(text) : NaN);
             if (!Number.isInteger(n) || n < 0) {
                 throw new Error(`"${key}" must be a whole number >= 0`);
             }
@@ -687,7 +689,14 @@ export function clearError() {
 export function planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp) {
     const inProton = protonSlugs instanceof Set ? protonSlugs : new Set(protonSlugs || []);
     const ours = (haBackups || []).filter((b) => b && b.slug);
-    const byDateAsc = (a, b) => new Date(a.date || 0) - new Date(b.date || 0); // oldest first
+    // Oldest first. A missing/unparseable date sorts as NEWEST, so it is never
+    // picked for deletion first (and the comparator can't return NaN, which
+    // made the order — and so what got deleted — arbitrary).
+    const ts = (b) => {
+        const t = new Date(b.date ?? NaN).getTime();
+        return Number.isNaN(t) ? Infinity : t;
+    };
+    const byDateAsc = (a, b) => (ts(a) > ts(b)) - (ts(a) < ts(b));
     const excess = (bucket, keep) => {
         if (!keep || keep <= 0) return [];
         const sorted = bucket.slice().sort(byDateAsc);
@@ -1137,6 +1146,9 @@ async function restore(remoteName) {
         const folder = await remoteFolder();
         await mkdir(tmpDir(), { recursive: true });
         tmpPath = join(tmpDir(), remoteName);
+        // A leftover file of the same name would otherwise be what gets restored
+        // if the download doesn't (over)write it.
+        await rm(tmpPath, { force: true });
 
         console.log(`[orchestrator] Restoring Proton backup "${remoteName}"`);
         setActivity(`Restoring ${remoteName}: downloading from Proton Drive…`);
