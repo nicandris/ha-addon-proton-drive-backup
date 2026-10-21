@@ -145,3 +145,31 @@ test('setSelfOptions merges the change over the current options', async () => {
     const post = seen.findLast((r) => r.key === 'POST /addons/self/options');
     assert.deepEqual(post.body, { options: { log_level: 'info', keep_app_in_ha: 3 } });
 });
+
+test('P17: setSelfOptions only ever uses /addons/self (no manager-only slug fallback)', async () => {
+    routes.set('GET /addons/self/info', { status: 200, body: { result: 'ok', data: { slug: 'x_pdb', options: {} } } });
+    routes.set('POST /addons/self/options', { status: 400, body: { result: 'error', message: 'bad option' } });
+    const before = seen.length;
+    await assert.rejects(() => supervisor.setSelfOptions({ keep_app_in_ha: 3 }), /bad option/);
+    assert.deepEqual(seen.slice(before).map((r) => r.key), ['GET /addons/self/info', 'POST /addons/self/options']);
+});
+
+test('P11: a long Supervisor call that never answers times out instead of hanging', async () => {
+    assert.ok(supervisor.LONG_CALL_TIMEOUT_MS > 0, 'long calls must have a timeout by default');
+    routes.set('POST /backups/new/full', { status: 200, body: { result: 'ok', data: { slug: 'x' } }, delayMs: 1500 });
+    await assert.rejects(() => supervisor.createBackup({ name: 'n', timeoutMs: 200 }), /timed out/);
+    routes.set('POST /backups/s/restore/full', { status: 200, body: { result: 'ok', data: {} }, delayMs: 1500 });
+    await assert.rejects(() => supervisor.restoreBackup('s', undefined, { timeoutMs: 200 }), /timed out/);
+});
+
+test('P15: notify/dismissNotification call the Core persistent_notification service', async () => {
+    routes.set('POST /core/api/services/persistent_notification/create', { status: 200, body: [] });
+    routes.set('POST /core/api/services/persistent_notification/dismiss', { status: 200, body: [] });
+    await supervisor.notify('pdb', 'Title', 'Body');
+    const created = seen.find((r) => r.key === 'POST /core/api/services/persistent_notification/create');
+    assert.deepEqual(created.body, { notification_id: 'pdb', title: 'Title', message: 'Body' });
+    assert.equal(created.auth, 'Bearer test-token');
+    await supervisor.dismissNotification('pdb');
+    routes.set('POST /core/api/services/persistent_notification/create', { status: 401, body: {} });
+    await assert.rejects(() => supervisor.notify('pdb', 't', 'm'), /HTTP 401/);
+});

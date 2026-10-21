@@ -18,6 +18,19 @@ import { randomBytes } from 'node:crypto';
 // Overridable so tests can point at a local fixture server.
 const BASE_URL = process.env.SUPERVISOR_URL || 'http://supervisor';
 
+/**
+ * Socket-idle ceiling for the long calls (backup creation, restore, upload).
+ * `node:http` has no timeout of its own, so a Supervisor that never answered
+ * held the add-on's sync lock forever. Hours, because a `background:false`
+ * backup of a large instance legitimately sends nothing for a long time.
+ */
+export const LONG_CALL_TIMEOUT_MS = 6 * 3600 * 1000;
+
+/** Make a `node:http` request fail (not hang) after `ms` of socket inactivity. */
+function failAfterIdle(req, ms, what) {
+    req.setTimeout(ms, () => req.destroy(new Error(`Supervisor ${what} timed out after ${Math.round(ms / 1000)} s`)));
+}
+
 function token() {
     return process.env.SUPERVISOR_TOKEN || '';
 }
@@ -71,9 +84,10 @@ async function supervisorJson(method, path, body) {
  * instance easily exceeds that — the request then rejected with
  * `UND_ERR_HEADERS_TIMEOUT` ("Backup creation failed: fetch failed") while HA
  * carried on and completed the backup, and the mirror step was skipped.
- * `node:http` has no default timeout, so the call simply waits.
+ * `node:http` has no default timeout, so the call waits — up to
+ * `LONG_CALL_TIMEOUT_MS` of silence.
  */
-function supervisorLongJson(method, path, body) {
+function supervisorLongJson(method, path, body, timeoutMs = LONG_CALL_TIMEOUT_MS) {
     console.debug(`[supervisor] ${method} ${path} (long-running, node:http)`);
     const base = new URL(BASE_URL);
     const payload = body === undefined ? null : Buffer.from(JSON.stringify(body), 'utf8');
@@ -116,6 +130,7 @@ function supervisorLongJson(method, path, body) {
             },
         );
         req.on('error', reject);
+        failAfterIdle(req, timeoutMs, `${method} ${path}`);
         if (payload) req.write(payload);
         req.end();
     });
@@ -151,8 +166,9 @@ export async function selfInfo() {
  * set missing any required key ("Missing option 'log_level'"), so the change is
  * merged over the current options first. It validates against `config.yaml`'s
  * schema, so an invalid value is rejected here rather than silently applied.
- * `self` is the documented way for an add-on to address itself; if a Supervisor
- * build rejects the POST we fall back to the resolved slug.
+ * `self` is the documented way for an add-on to address itself, and the only
+ * one the `backup` role allows (`/addons/self/*` bypasses role checks;
+ * `/addons/<slug>/options` would need `manager`), so there is no slug fallback.
  *
  * @param {Record<string, unknown>} changes - only the keys being changed.
  */
@@ -160,15 +176,7 @@ export async function setSelfOptions(changes) {
     console.debug(`[supervisor] setSelfOptions: ${Object.keys(changes).join(', ')}`);
     const info = await selfInfo();
     const options = { ...info?.options, ...changes };
-    try {
-        return await supervisorJson('POST', '/addons/self/options', { options });
-    } catch (err) {
-        // Fall back to the explicit slug (e.g. `a1b2c3d4_proton_drive_backup`).
-        const slug = info?.slug;
-        if (!slug) throw err;
-        console.debug(`[supervisor] setSelfOptions: retrying with slug ${slug}`);
-        return supervisorJson('POST', `/addons/${slug}/options`, { options });
-    }
+    return supervisorJson('POST', '/addons/self/options', { options });
 }
 
 /**
@@ -176,11 +184,11 @@ export async function setSelfOptions(changes) {
  * Uses the long-running transport — a multi-GB backup takes well over undici's
  * 300 s headers timeout.
  */
-export async function createBackup({ name, password } = {}) {
+export async function createBackup({ name, password, timeoutMs } = {}) {
     const body = { name, compressed: true, background: false };
     if (password) body.password = password;
     console.debug(`[supervisor] createBackup: name="${name}" password=${password ? 'set' : 'none'}`);
-    const data = await supervisorLongJson('POST', '/backups/new/full', body);
+    const data = await supervisorLongJson('POST', '/backups/new/full', body, timeoutMs);
     console.debug(`[supervisor] createBackup: created slug=${data?.slug}`);
     return data?.slug;
 }
@@ -212,9 +220,10 @@ export async function downloadBackup(slug, destPath) {
  * into the request, so memory stays flat regardless of backup size.
  *
  * @param {string} srcPath
+ * @param {{timeoutMs?:number}} [opts] - socket-idle timeout
  * @returns {Promise<string>} the new backup's slug
  */
-export async function uploadBackup(srcPath) {
+export async function uploadBackup(srcPath, { timeoutMs = LONG_CALL_TIMEOUT_MS } = {}) {
     console.debug(`[supervisor] uploadBackup: ${srcPath} (streamed)`);
     const { size } = await stat(srcPath);
     // Quote-escape so a name containing `"` can't break the header.
@@ -267,6 +276,7 @@ export async function uploadBackup(srcPath) {
         );
 
         req.on('error', reject);
+        failAfterIdle(req, timeoutMs, 'upload');
         req.write(head);
 
         const file = createReadStream(srcPath);
@@ -280,6 +290,30 @@ export async function uploadBackup(srcPath) {
     });
 }
 
+/**
+ * Call a Home Assistant Core service through the Supervisor's Core API proxy
+ * (needs `homeassistant_api: true`). Core answers with its own JSON, not the
+ * Supervisor envelope, so only the HTTP status decides success.
+ */
+async function callService(domain, service, data) {
+    const resp = await fetch(`${BASE_URL}/core/api/services/${domain}/${service}`, {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify(data),
+    });
+    if (!resp.ok) throw new Error(`Home Assistant ${domain}.${service} failed: HTTP ${resp.status}`);
+}
+
+/** Show (or replace) a persistent notification in Home Assistant. */
+export function notify(notificationId, title, message) {
+    return callService('persistent_notification', 'create', { notification_id: notificationId, title, message });
+}
+
+/** Remove a persistent notification shown by `notify`. */
+export function dismissNotification(notificationId) {
+    return callService('persistent_notification', 'dismiss', { notification_id: notificationId });
+}
+
 export async function deleteBackup(slug) {
     await supervisorJson('DELETE', `/backups/${slug}`);
     console.debug(`[supervisor] deleteBackup: ${slug} deleted`);
@@ -289,9 +323,9 @@ export async function deleteBackup(slug) {
  * Start a full restore and wait for it. Long-running transport for the same
  * reason as `createBackup` (a restore blocks for as long as it takes).
  */
-export async function restoreBackup(slug, password) {
+export async function restoreBackup(slug, password, { timeoutMs } = {}) {
     console.debug(`[supervisor] restoreBackup: slug=${slug} password=${password ? 'set' : 'none'}`);
     const body = { background: false };
     if (password) body.password = password;
-    return supervisorLongJson('POST', `/backups/${slug}/restore/full`, body);
+    return supervisorLongJson('POST', `/backups/${slug}/restore/full`, body, timeoutMs);
 }

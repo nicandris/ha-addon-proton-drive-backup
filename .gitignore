@@ -1,13 +1,3 @@
-# Python (vestigial — this project began as a Python integration)
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-venv/
-.mypy_cache/
-.ruff_cache/
-.pytest_cache/
-
 # Node — node_modules would be produced inside the Docker image at build time,
 # so it is not committed. (There is no bundle step; Node runs src/ directly.)
 proton_drive_backup/node_modules/

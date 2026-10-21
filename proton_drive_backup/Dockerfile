@@ -1,4 +1,6 @@
-FROM ghcr.io/home-assistant/base:3.24
+# Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
+# change what we build on; Dependabot bumps tag and digest together.
+FROM ghcr.io/home-assistant/base:3.24@sha256:8fde4170393bdf7a121ea4d6e34b417e1d0b90125948459f9f9f70cdf5d77c16
 # Pin the Node MAJOR explicitly: Alpine 3.23+ ships Node 24, and an unpinned
 # `apk add nodejs` would silently follow the base image to a new major.
 # The test suite is verified on Node 24.
@@ -6,19 +8,25 @@ RUN apk add --no-cache 'nodejs~=24'
 
 # HA provides BUILD_ARCH (amd64 | aarch64 | armv7 | ...). Only amd64/aarch64 have
 # a musl proton-drive build, so anything else fails the build explicitly.
+#
+# The SHA-512s are PROTON'S PUBLISHED checksums (`Sha512CheckSum` per file in
+# https://proton.me/download/drive/cli/version.json), not hashes of whatever we
+# happened to download first. When bumping, copy them from that file. If a build
+# ever fails here while the version is unchanged, Proton's file changed under a
+# published version: treat it as a security incident — do NOT just update the hash.
 ARG BUILD_ARCH
 RUN set -eu; \
     case "${BUILD_ARCH}" in \
       amd64) \
         URL="https://proton.me/download/drive/cli/0.9.0/linux-x64-musl/proton-drive"; \
-        SHA="62e27deddcf6329ec92270a03312f460b2da95d0ef9c6e581c91b712c5147558" ;; \
+        SHA="8f99c3bc478ebc2948ca69c8576a48d83b3290d807ca61fac9b0f5d0a91c0d418e595232d67e2ae0173d2188963771afd4292aefafab3f64e808a61c4399d6ed" ;; \
       aarch64) \
         URL="https://proton.me/download/drive/cli/0.9.0/linux-arm64-musl/proton-drive"; \
-        SHA="54eeb5912078dd7ccbf657691748f7af252acb860e4859c9d08eb22fe9f25b5f" ;; \
+        SHA="4b632e5e694f6d0825aaa57f39f99494aa6a46eac45e90d65daa10b2e46316046b627d3c1145cb9c7d58951735cc6e81c28cca44dda648b411315a28d04b2acf" ;; \
       *) echo "unsupported arch: ${BUILD_ARCH}" && false ;; \
     esac; \
     wget -O /usr/local/bin/proton-drive "${URL}"; \
-    echo "${SHA}  /usr/local/bin/proton-drive" | sha256sum -c -; \
+    echo "${SHA}  /usr/local/bin/proton-drive" | sha512sum -c -; \
     chmod +x /usr/local/bin/proton-drive
 
 WORKDIR /app

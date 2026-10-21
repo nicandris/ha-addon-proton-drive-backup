@@ -1,5 +1,5 @@
 # The add-on has a real test suite (node --test) that nothing ran until now, and
-# a Dockerfile that pins the Proton Drive CLI by URL + SHA-256. That pin has
+# a Dockerfile that pins the Proton Drive CLI by URL + SHA-512. That pin has
 # rotted server-side before — a build that stops resolving is the only warning
 # there is — so the image is also built weekly, not just on pull requests.
 name: CI
@@ -12,6 +12,11 @@ on:
     - cron: "0 5 * * 1" # Mondays: catch a CLI pin that stopped resolving.
   workflow_dispatch:
 
+# Read-only token: nothing here publishes. (Actions are pinned by commit SHA;
+# Dependabot keeps the SHAs and their version comments current.)
+permissions:
+  contents: read
+
 jobs:
   test:
     name: Tests (Node ${{ matrix.node }})
@@ -22,20 +27,34 @@ jobs:
         # 24 is what the image ships (Dockerfile pins nodejs~=24).
         node: ["24"]
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ matrix.node }}
       - name: Run the test suite
         working-directory: proton_drive_backup
         run: npm test
 
+  # The release (which needs this) only runs after merge; catch a version bump
+  # without its CHANGELOG section on the pull request instead.
+  changelog:
+    name: CHANGELOG covers the version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: config.yaml version has a CHANGELOG section
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version:' proton_drive_backup/config.yaml | tr -d ' "' | cut -d: -f2)
+          grep -qx "## $version" proton_drive_backup/CHANGELOG.md \
+            || { echo "::error::no '## $version' section in proton_drive_backup/CHANGELOG.md"; exit 1; }
+
   lint:
     name: Lint add-on config
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: frenck/action-app-linter@v2.21.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: frenck/action-app-linter@b9cfd1bc62ba60d2c4fc96317b5f7ada5923f4a7 # v2.21.1
         with:
           path: ./proton_drive_backup
 
@@ -47,14 +66,14 @@ jobs:
       matrix:
         arch: [amd64, aarch64]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # aarch64 is built under emulation; amd64 is native.
-      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
         if: matrix.arch == 'aarch64'
 
       # The default docker driver cannot build for a foreign platform.
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       - name: Build (no push)
         run: |

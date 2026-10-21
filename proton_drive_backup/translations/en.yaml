@@ -1,0 +1,47 @@
+configuration:
+  drive_folder:
+    name: Drive folder
+    description: >-
+      Folder under your Proton Drive "My files" where backups are stored.
+      Created if it does not exist.
+  backup_interval_hours:
+    name: Check interval (hours)
+    description: >-
+      How often to check Home Assistant for new backups to upload (also on
+      start-up and on "Sync now"). 0 = start-up and manual only; above 596 counts as 596.
+  keep_automatic_in_proton:
+    name: Automatic backups to keep in Proton
+    description: >-
+      Newest automatic backups (name starts with the automatic prefix) kept in
+      Proton Drive; older ones are trashed each sync. 0 keeps all.
+  keep_app_in_proton:
+    name: Other backups to keep in Proton
+    description: >-
+      Newest app/manual backups kept in Proton Drive. 0 keeps all.
+  keep_automatic_in_ha:
+    name: Automatic backups to keep in Home Assistant
+    description: >-
+      Used only by the panel's "Clean up local backups" button, which deletes
+      older ones that are already in Proton. 0 = never delete.
+  keep_app_in_ha:
+    name: Other backups to keep in Home Assistant
+    description: >-
+      As above, for app/manual backups. 0 = never delete.
+  permanently_delete:
+    name: Empty pruned backups from the trash
+    description: >-
+      Also remove pruned or deleted backups from the Proton Drive trash, where
+      they still count against your storage quota.
+  automatic_name_prefix:
+    name: Automatic backup name prefix
+    description: >-
+      Backups whose name starts with this count as automatic. Change it only if
+      your Home Assistant names its scheduled backups differently.
+  backup_password:
+    name: Backup password
+    description: >-
+      Encrypts backups made with the panel's "Create backup", and decrypts
+      backups on restore. Leave empty if your backups are not encrypted.
+  log_level:
+    name: Log level
+    description: How much the add-on logs.

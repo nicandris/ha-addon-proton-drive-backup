@@ -1,5 +1,97 @@
 # Changelog
 
+## 0.5.0
+
+### Security
+
+- **Your Proton sign-in is now really left out of Home Assistant backups.** The
+  exclusion added in 0.4.9 was written as `/data/proton-drive-cli/*`, but the
+  Supervisor matches it against its own path for the file
+  (`/data/addons/data/<slug>/proton-drive-cli/…`), so it never matched and every
+  backup still carried a usable Proton session token. It is now
+  `proton-drive-cli`. Backups made before this version still contain the token:
+  press **Disconnect** and **Connect** once to sign that session out.
+- **The panel's server only answers Home Assistant.** It listened to every
+  container on the internal add-on network, so any other add-on could restore
+  or delete backups, or connect the add-on to *its own* Proton account and
+  receive your backups. Requests that don't come through Home Assistant's
+  ingress proxy are now refused.
+- **Narrower Supervisor permission.** The add-on now asks for the `backup` role
+  instead of `manager`, which covers everything it uses.
+
+### Added
+
+- **Home Assistant notifies you when backups stop.** A failed sync, or a Proton
+  session that needs signing in again, now raises a notification in Home
+  Assistant; the next successful sync clears it. This needs the
+  `homeassistant_api` permission, which the add-on now requests.
+- **More settings in the panel.** `permanently_delete` can be switched there, and
+  the log level you pick in the panel is now saved instead of resetting on the
+  next restart.
+- **Option descriptions on the Configuration tab** (`translations/en.yaml`).
+
+### Fixed
+
+- **Retention no longer trashes your newest backups.** Proton retention ordered
+  backups by Home Assistant's date when HA still had the backup, and by the
+  *upload* time otherwise, so an old backup uploaded late looked newest. The add-on
+  now remembers each backup's real date and size (in `/data/backup-dates.json`).
+  Copies already gone from Home Assistant before this update have no known date:
+  they are kept, don't count towards the keep-count, and are listed in the log —
+  delete them from the panel if you don't need them.
+- **No more upload → trash → upload loop.** A Home Assistant backup older than
+  the Proton keep-count was uploaded and trashed again on every sync. It is now
+  not uploaded.
+- **Backups without a date no longer use up keep slots,** which trashed the
+  backup that had just been uploaded.
+- **A truncated upload no longer counts towards the keep-count,** which pruned
+  the oldest good copy instead — also once the backup has left Home Assistant
+  (its size is remembered).
+- **Proton retention is skipped if Home Assistant can't be asked for backup
+  dates,** instead of pruning by the wrong dates.
+- **A very long `backup_interval_hours` no longer syncs non-stop.** Above 596
+  hours the timer overflowed and fired every millisecond; longer values now
+  sync every 596 hours (about 24 days) instead, with a warning in the log.
+- **Changing the sync interval in the panel takes effect at once,** and the
+  "Next sync" time no longer drifts: the next sync is scheduled one interval
+  after the previous one finished.
+- **Your own `.tar` files in the backup folder are left alone.** Any `.tar` in
+  `drive_folder` counted as one of the add-on's backups and could be pruned;
+  only files named `<name> (<slug>).tar` with a real Home Assistant backup id
+  count now (so `Holiday photos (2023).tar` is yours, not a backup).
+- **"Last sync" no longer moves forward when the sync failed.** It was updated
+  (and "Sync complete" logged) even when every upload had failed, so the panel
+  looked current while nothing was being backed up.
+- **A hung transfer no longer stops all backups.** Uploads, downloads and the
+  long Supervisor calls had no timeout, so one that never finished kept the
+  add-on "syncing" forever. A transfer now gives up after 30 minutes with no
+  progress at all (a slow upload that keeps moving is never cut off), and a
+  Supervisor call after 6 hours without a reply.
+- **A slightly short upload is no longer accepted as a good copy.** Sizes could
+  differ by 1%, so a 5 GB backup missing ~50 MB passed as verified — and a
+  verified copy is what lets **Clean up local backups** delete the local one. The
+  sizes must now match to within 64 KB.
+- **`permanently_delete` only empties the copy it just trashed.** It purged every
+  trashed file with the same name, including copies you had trashed earlier. The
+  other side of this: older same-name copies that were already in the Proton
+  trash now stay there (and count against your quota) until you empty the
+  trash yourself.
+- **Restore, Delete, Clean up local backups, Sync now and Create backup say so
+  when the add-on is busy.**
+  A restore started during a sync answered "Restore started" and then did
+  nothing; Delete and the local clean-up ran straight through a running sync.
+  All of them now wait their turn and tell you to try again.
+- **A typo in a keep-count is rejected** instead of half-read: `1O` used to save
+  as `1`.
+- **Restore always uses the freshly downloaded archive,** never a leftover file
+  with the same name.
+
+### Documentation
+
+- `backup_password` is also used to encrypt the backups **Create backup**
+  makes; the docs now say so. The developer guide is up to date again.
+
+
 ## 0.4.15
 
 ### Changed
@@ -103,6 +195,8 @@
   *Trade-off:* restoring a backup no longer restores the Proton session — press
   **Connect** once after a restore. That is deliberate: a backup should not carry a
   live credential.
+  **Correction (0.5.0):** the exclusion did not take effect until 0.5.0 — see
+  there.
 - **The session files are no longer world-readable.** The CLI writes them `0644`
   in a `0755` directory; they are now tightened to `0600` inside a `0700`
   directory, at start-up and again after each sign-in (a fresh login rewrites them

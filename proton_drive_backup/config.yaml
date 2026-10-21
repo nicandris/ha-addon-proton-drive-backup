@@ -1,8 +1,13 @@
 name: Proton Drive Backup
-version: "0.4.15"
+version: "0.5.0"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive-backup
+# Prebuilt images are published by .github/workflows/release.yml. Leave this
+# commented until a release has pushed BOTH arches and the GHCR packages are
+# public — with `image:` set, the Supervisor pulls instead of building, so an
+# image that doesn't exist yet breaks every install and update.
+# image: ghcr.io/nicandris/{arch}-proton-drive-backup
 arch:
   - amd64
   - aarch64
@@ -12,10 +17,21 @@ init: false
 # ones this add-on uploads to Proton — would carry a USABLE Proton session token.
 # Excluding it means a restored backup asks you to press Connect again, which is
 # the right trade for not shipping a live credential inside every archive.
+# The Supervisor matches these with PurePath.match() against ITS path
+# (/data/addons/data/<slug>/proton-drive-cli/...), not the container's /data, so
+# they must be RELATIVE: an absolute "/data/proton-drive-cli/*" never matches.
+# The bare directory name excludes the whole directory (it is not recursed into).
 backup_exclude:
-  - /data/proton-drive-cli/*
+  - proton-drive-cli
+  - proton-drive-cli/*
 hassio_api: true
-hassio_role: manager
+# `backup` is enough: it allows /backups* and every */info call (incl.
+# /host/info); /addons/self/options bypasses role checks altogether
+# (Supervisor api/middleware/security.py). `manager` would add far more.
+hassio_role: backup
+# Only to raise/clear a persistent notification when a sync fails or a sign-in
+# is needed (Core API: persistent_notification.create / .dismiss).
+homeassistant_api: true
 ingress: true
 panel_icon: mdi:cloud-lock
 panel_title: Proton Backup

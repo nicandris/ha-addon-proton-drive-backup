@@ -84,6 +84,17 @@ test('login() resolves {ok:false, error} on nonzero exit', async () => {
 
 // --- list(): the explicitly-unverified JSON shape. Parse defensively. ---
 
+test('P22: a failed login never puts the sign-in URL in its error text', async () => {
+    clearFake();
+    process.env.FAKE_LOGIN_CODE = '1';
+    process.env.FAKE_LOGIN_STDERR = 'session expired';
+    const r = await cli.login({ onUrl: () => {} });
+    assert.equal(r.ok, false);
+    assert.match(r.error, /session expired/);
+    assert.doesNotMatch(r.error, /account\.proton\.me/);
+    assert.match(r.error, /<sign-in link>/);
+});
+
 test('list() parses a bare array', async () => {
     clearFake();
     process.env.FAKE_LIST_JSON = JSON.stringify([
@@ -226,7 +237,20 @@ test('listStrict() THROWS on unparseable output and on a non-array shape', async
     await assert.rejects(() => cli.listStrict('/my-files/x'), /JSON parse failed/);
     clearFake();
     process.env.FAKE_LIST_JSON = JSON.stringify({ meta: 1, nested: { a: 2 } }); // no array anywhere
-    await assert.rejects(() => cli.listStrict('/my-files/x'), /no recognisable array/);
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /unexpected schema/);
+});
+
+test('P20: listStrict() refuses the loose shapes the lenient list() tolerates', async () => {
+    for (const json of [
+        { items: [{ name: 'a (s1).tar' }] },            // wrapped array
+        { errors: [], nodes: [{ name: 'a (s1).tar' }] }, // "first array" would be errors: []
+        ['a (s1).tar'],                                   // bare strings
+    ]) {
+        clearFake();
+        process.env.FAKE_LIST_JSON = JSON.stringify(json);
+        await assert.rejects(() => cli.listStrict('/my-files/x'), /unexpected schema/, JSON.stringify(json));
+        assert.ok(Array.isArray(await cli.list('/my-files/x')), 'lenient list still tolerates it');
+    }
 });
 
 test('listStrict() returns the parsed entries on success (incl. a genuinely empty folder)', async () => {
@@ -350,6 +374,26 @@ test('uploadFile/downloadPath/trash resolve on success', async () => {
     await cli.trash('/my-files/f/x.tar');
 });
 
+test('P11: a hung upload/download is killed by its timeout instead of hanging forever', async () => {
+    clearFake();
+    process.env.FAKE_FS_HANG_MS = '20000';
+    assert.ok(cli.TRANSFER_STALL_MS > 0 && cli.TRANSFER_CEILING_MS > 0, 'transfers must have timeouts by default');
+    await assert.rejects(() => cli.uploadFile('/tmp/x.tar', '/my-files/f', { timeoutMs: 200 }), /timeout/);
+    await assert.rejects(() => cli.downloadPath('/my-files/f/x.tar', '/tmp', { timeoutMs: 200 }), /timeout/);
+});
+
+test('a transfer is killed when it stalls, not while it is making progress', async () => {
+    clearFake();
+    // Silent and hung: killed by the stall timeout, long before the ceiling.
+    process.env.FAKE_FS_HANG_MS = '20000';
+    await assert.rejects(() => cli.uploadFile('/tmp/x.tar', '/my-files/f', { stallMs: 300 }), /without progress/);
+    // Slow but alive (output every 50 ms for 1.2 s, i.e. 4x the stall window): finishes.
+    process.env.FAKE_FS_HANG_MS = '1200';
+    process.env.FAKE_FS_TICK_MS = '50';
+    await cli.uploadFile('/tmp/x.tar', '/my-files/f', { stallMs: 300 });
+    await cli.downloadPath('/my-files/f/x.tar', '/tmp', { stallMs: 300 });
+});
+
 test('uploadFile passes the 0.8.0 conflict flag (-f), not the removed -c', async () => {
     clearFake();
     process.env.FAKE_FS_CODE = '0';
@@ -437,6 +481,16 @@ test('deleteFromTrash deletes every same-named trashed node by UID', async () =>
     ]);
     process.env.FAKE_DELETE_EXPECT = '/trash/v~a /trash/v~b';
     assert.equal(await cli.deleteFromTrash('x (s1).tar'), 2);
+});
+
+test('P13: deleteFromTrash leaves the nodes in `keep` (trashed earlier) alone', async () => {
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~old' },
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~new' },
+    ]);
+    process.env.FAKE_DELETE_EXPECT = '/trash/v~new';
+    assert.deepEqual(await cli.trashedUids('x (s1).tar'), ['v~old', 'v~new']);
+    assert.equal(await cli.deleteFromTrash('x (s1).tar', { keep: ['v~old'] }), 1);
 });
 
 test('deleteFromTrash throws when the name is not in the trash', async () => {

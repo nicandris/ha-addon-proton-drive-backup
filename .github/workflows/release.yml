@@ -1,34 +1,56 @@
-# Tag and publish a GitHub release whenever config.yaml's version lands on main.
+# Tag and publish a GitHub release whenever config.yaml's version lands on main
+# AND CI passed for that commit, then publish the add-on images to GHCR.
 #
 # config.yaml is the single source of the version (see DEVELOPMENT.md §10), so
 # there is nothing to decide here: if v<version> is already tagged, this is an
 # ordinary merge and the job is a no-op. Release notes are the matching section
 # of the add-on CHANGELOG — the file Home Assistant itself displays.
+#
+# Triggered by CI finishing (workflow_run) rather than by the push itself, so a
+# red main never gets released. A release created with GITHUB_TOKEN can't
+# trigger another workflow, so the image publish is a job here, not a separate
+# `on: release` workflow.
 name: Release
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
 permissions:
-  contents: write # create the tag and the release
+  contents: read
 
 jobs:
   release:
+    # Only a GREEN CI run for a push to main — not a PR, the weekly schedule or
+    # a manual run.
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the tag and the release
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+      released: ${{ steps.release.outputs.released }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Release if the version is new
+        id: release
         env:
           GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           set -euo pipefail
           version=$(grep -m1 '^version:' proton_drive_backup/config.yaml | tr -d ' "' | cut -d: -f2)
           [ -n "$version" ] || { echo "::error::no version: in proton_drive_backup/config.yaml"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
           if gh release view "v$version" >/dev/null 2>&1; then
             echo "v$version is already released — nothing to do."
+            echo "released=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -37,5 +59,60 @@ jobs:
           [ -n "$notes" ] || { echo "::error::no '## $version' section in proton_drive_backup/CHANGELOG.md"; exit 1; }
 
           printf '%s\n' "$notes" > /tmp/notes.md
-          gh release create "v$version" --target "$GITHUB_SHA" --title "v$version" --notes-file /tmp/notes.md
+          gh release create "v$version" --target "$HEAD_SHA" --title "v$version" --notes-file /tmp/notes.md
+          echo "released=true" >> "$GITHUB_OUTPUT"
           echo "Released v$version."
+
+  # Prebuilt images, so installs don't depend on every user's machine being able
+  # to fetch the pinned Proton CLI URL. config.yaml does NOT point at them yet
+  # (see the commented `image:` there): switch it on once a release has published
+  # both arches and the GHCR packages are public.
+  publish:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        if: matrix.arch == 'aarch64'
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/${ARCH}-proton-drive-backup"
+          docker buildx build \
+            --platform "$PLATFORM" \
+            --build-arg BUILD_ARCH="$ARCH" \
+            --label "io.hassio.version=$VERSION" \
+            --label "io.hassio.arch=$ARCH" \
+            --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" \
+            --tag "$image:$VERSION" \
+            --tag "$image:latest" \
+            --push \
+            proton_drive_backup

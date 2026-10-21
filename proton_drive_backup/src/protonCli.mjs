@@ -17,7 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, readdir, stat } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Absolute path (or bare name on $PATH) of the proton-drive binary. */
@@ -26,7 +26,7 @@ const BIN = process.env.PROTON_DRIVE_BIN || 'proton-drive';
 
 /**
  * Append to a captured stream buffer, keeping only the head and tail. A long
- * upload (no timeout) or a 5-minute login can emit unbounded progress output;
+ * upload (hours) or a 5-minute login can emit unbounded progress output;
  * the only consumers are exit-code checks, a short debug line and error text.
  */
 const CAP_BYTES = 64 * 1024;
@@ -82,6 +82,27 @@ export async function secureSessionStore() {
     return { dir, files, changed };
 }
 
+/**
+ * An upload/download is killed once it has made NO progress for this long —
+ * no output from the CLI and no bytes moved (its /proc/<pid>/io counters, on
+ * Linux). With no timeout at all, a hung transfer held the sync lock forever;
+ * a fixed wall-clock limit instead killed every big upload on a slow uplink.
+ */
+export const TRANSFER_STALL_MS = 30 * 60 * 1000;
+/** Backstop for a transfer that keeps "progressing" forever (e.g. retry spam). */
+export const TRANSFER_CEILING_MS = 72 * 3600 * 1000;
+
+/** The CLI's total read+write syscall bytes, or null where /proc isn't available. */
+async function ioBytes(pid) {
+    try {
+        const text = await readFile(`/proc/${pid}/io`, 'utf8');
+        const field = (name) => Number(text.match(new RegExp(`^${name}: (\\d+)`, 'm'))?.[1] ?? 0);
+        return field('rchar') + field('wchar');
+    } catch {
+        return null;
+    }
+}
+
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
 
@@ -128,11 +149,12 @@ function childEnv() {
  * Run the CLI with the given argv. Never rejects on a nonzero exit code.
  *
  * @param {string[]} args - CLI arguments (no binary name).
- * @param {{timeoutMs?:number, cwd?:string}} [opts] - timeoutMs<=0 disables the
- *   timeout (use for large uploads/downloads).
+ * @param {{timeoutMs?:number, stallMs?:number, cwd?:string}} [opts] -
+ *   timeoutMs<=0 disables the wall-clock timeout; stallMs>0 also kills the child
+ *   after that long without progress (output, or I/O bytes on Linux).
  * @returns {Promise<{code:number, stdout:string, stderr:string}>}
  */
-export function run(args, { timeoutMs = 120000, cwd } = {}) {
+export function run(args, { timeoutMs = 120000, stallMs = 0, cwd } = {}) {
     return new Promise((resolve, reject) => {
         console.debug(`[protonCli] run: ${BIN} ${args.join(' ')}`);
         const child = spawn(BIN, args, {
@@ -143,7 +165,10 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
         let stdout = '';
         let stderr = '';
         let timer = null;
+        let stallTimer = null;
         let killedByTimeout = false;
+        let killedByStall = false;
+        let lastProgress = Date.now();
 
         if (timeoutMs > 0) {
             timer = setTimeout(() => {
@@ -151,22 +176,41 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
                 child.kill('SIGKILL');
             }, timeoutMs);
         }
+        if (stallMs > 0) {
+            let lastIo = null;
+            stallTimer = setInterval(async () => {
+                const io = await ioBytes(child.pid);
+                if (io !== null && io !== lastIo) {
+                    lastIo = io;
+                    lastProgress = Date.now();
+                }
+                if (Date.now() - lastProgress > stallMs) {
+                    killedByStall = true;
+                    child.kill('SIGKILL');
+                }
+            }, Math.max(50, Math.min(60000, Math.floor(stallMs / 4))));
+        }
+        const stopTimers = () => {
+            if (timer) clearTimeout(timer);
+            if (stallTimer) clearInterval(stallTimer);
+        };
 
-        child.stdout.on('data', (d) => { stdout = capped(stdout, d.toString()); });
-        child.stderr.on('data', (d) => { stderr = capped(stderr, d.toString()); });
+        child.stdout.on('data', (d) => { lastProgress = Date.now(); stdout = capped(stdout, d.toString()); });
+        child.stderr.on('data', (d) => { lastProgress = Date.now(); stderr = capped(stderr, d.toString()); });
 
         child.on('error', (err) => {
-            if (timer) clearTimeout(timer);
+            stopTimers();
             reject(err); // binary missing / not executable — a real failure
         });
 
         child.on('close', (code, signal) => {
-            if (timer) clearTimeout(timer);
+            stopTimers();
             // A signal-killed child reports code=null. Mapping that straight to 1
             // made an OOM kill indistinguishable from an ordinary CLI error —
             // the output just stopped mid-line and the caller reported "exit 1".
-            const exitCode = killedByTimeout ? 124 : (code ?? (signal ? 128 : 1));
-            if (killedByTimeout) stderr += `\n[protonCli] killed after ${timeoutMs}ms timeout`;
+            const exitCode = (killedByTimeout || killedByStall) ? 124 : (code ?? (signal ? 128 : 1));
+            if (killedByStall) stderr += `\n[protonCli] killed after ${stallMs}ms without progress (stall timeout)`;
+            else if (killedByTimeout) stderr += `\n[protonCli] killed after ${timeoutMs}ms timeout`;
             else if (signal) stderr += `\n[protonCli] killed by ${signal}`
                 + (signal === 'SIGKILL' ? ' — most likely the out-of-memory killer, not a Proton error' : '');
             console.debug(`[protonCli] exit ${exitCode} (${BIN} ${args[0] || ''} ${args[1] || ''})`);
@@ -203,6 +247,9 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
         let urlSent = false;
         let settled = false;
         const urlRe = /https:\/\/account\.proton\.me\/\S+/;
+        // The sign-in link is a live credential-in-waiting: keep it out of the
+        // error text, which is logged and shown in the panel.
+        const redact = (text) => text.replace(new RegExp(urlRe.source, 'g'), '<sign-in link>');
 
         const timer = timeoutMs > 0 ? setTimeout(() => {
             if (settled) return;
@@ -239,7 +286,7 @@ export function login({ onUrl, timeoutMs = 300000 } = {}) {
                 console.debug('[protonCli] login: completed OK');
                 resolve({ ok: true });
             } else {
-                const error = errText({ stdout, stderr }, `auth login exited ${code}`);
+                const error = redact(errText({ stdout, stderr }, `auth login exited ${code}`));
                 console.debug(`[protonCli] login: failed — ${error}`);
                 resolve({ ok: false, error });
             }
@@ -341,8 +388,11 @@ function sizeOf(entry) {
  *    made the orchestrator re-upload every backup with `-c replace` (tens of GB)
  *    and reset every Proton `modificationTime`, destroying retention ordering.
  *
- * The shape below is the CLI's real `filesystem list -j` schema (locked in
- * 0.2.4); the extra tolerance is kept because the CLI is early.
+ * The CLI's real `filesystem list -j` schema (locked in 0.2.4) is a bare array
+ * of node objects. LENIENT mode also tolerates other shapes because the CLI is
+ * early; STRICT mode does not — guessing "the first array in some object" could
+ * pick an unrelated (e.g. empty `errors`) array, i.e. exactly the false-empty
+ * listing strict mode exists to refuse.
  *
  * @param {string} remotePath
  * @param {{strict?:boolean}} [opts]
@@ -364,10 +414,15 @@ export async function list(remotePath, { strict = false } = {}) {
     } catch (err) {
         return fail(`JSON parse failed (${err.message})`);
     }
-    // Tolerate: [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
+    // Tolerate (lenient only): [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
     let arr = null;
     if (Array.isArray(parsed)) {
         arr = parsed;
+        if (strict && arr.some((e) => !e || typeof e !== 'object' || Array.isArray(e))) {
+            return fail('JSON array holds non-object entries (unexpected schema)');
+        }
+    } else if (strict) {
+        return fail('JSON was not the expected bare array of nodes (unexpected schema)');
     } else if (parsed && typeof parsed === 'object') {
         arr = parsed.items || parsed.entries || parsed.data || parsed.children ||
             Object.values(parsed).find((v) => Array.isArray(v)) || null;
@@ -429,8 +484,9 @@ export function listStrict(remotePath) {
 }
 
 /**
- * Upload a local file into a remote parent folder. Uses no timeout (large
- * files). Throws with stderr on a nonzero exit.
+ * Upload a local file into a remote parent folder, killed after
+ * `TRANSFER_STALL_MS` without progress. Throws with stderr on a nonzero exit or
+ * timeout.
  *
  * @param {string} localPath
  * @param {string} remoteParent
@@ -438,12 +494,14 @@ export function listStrict(remotePath) {
  * from `-c`, which now fails the upload outright with "Unknown option '-c'" —
  * `-d` is the folder equivalent and is not used here (we only upload files).
  *
- * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip')}} [opts]
+ * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip'), timeoutMs?:number, stallMs?:number}} [opts]
  */
-export async function uploadFile(localPath, remoteParent, { conflictStrategy = 'replace' } = {}) {
+export async function uploadFile(localPath, remoteParent, {
+    conflictStrategy = 'replace', timeoutMs = TRANSFER_CEILING_MS, stallMs = TRANSFER_STALL_MS,
+} = {}) {
     const res = await run(
         ['filesystem', 'upload', '-f', conflictStrategy, localPath, remoteParent],
-        { timeoutMs: 0 },
+        { timeoutMs, stallMs },
     );
     if (res.code !== 0) {
         throw new Error(`upload "${localPath}" → "${remoteParent}" failed: ${errText(res)}`);
@@ -451,16 +509,20 @@ export async function uploadFile(localPath, remoteParent, { conflictStrategy = '
 }
 
 /**
- * Download a remote path into a local folder. No timeout (large files).
- * Throws with stderr on a nonzero exit.
+ * Download a remote path into a local folder, killed after
+ * `TRANSFER_STALL_MS` without progress. Throws with stderr on a nonzero exit or
+ * timeout.
  *
  * @param {string} remotePath
  * @param {string} localFolder
+ * @param {{timeoutMs?:number, stallMs?:number}} [opts]
  */
-export async function downloadPath(remotePath, localFolder) {
+export async function downloadPath(remotePath, localFolder, {
+    timeoutMs = TRANSFER_CEILING_MS, stallMs = TRANSFER_STALL_MS,
+} = {}) {
     const res = await run(
         ['filesystem', 'download', remotePath, localFolder],
-        { timeoutMs: 0 },
+        { timeoutMs, stallMs },
     );
     if (res.code !== 0) {
         throw new Error(`download "${remotePath}" → "${localFolder}" failed: ${errText(res)}`);
@@ -478,17 +540,29 @@ export async function trash(remotePath) {
     }
 }
 
+/** UIDs of the trashed nodes named `name` (trash is flat; names repeat). */
+export async function trashedUids(name) {
+    return (await list('/trash', { strict: true }))
+        .filter((e) => e.name === name && e.uid)
+        .map((e) => e.uid);
+}
+
 /**
- * Permanently delete every trashed file named `name`. Trash is flat, and a name
- * shared by several trashed nodes (e.g. copies replaced by a re-upload) is only
- * addressable by node UID — so always delete by UID, never by name.
+ * Permanently delete the trashed nodes named `name`, except the UIDs in `keep`.
+ * Trash is flat, and a name shared by several trashed nodes is only addressable
+ * by node UID — so always delete by UID, never by name. Pass `keep` = what was
+ * already in the trash BEFORE your own trash call (`trashedUids`): purging every
+ * same-named node also destroyed copies the user trashed earlier and may still
+ * want back.
  * @param {string} name - bare filename, as it was before trashing
+ * @param {{keep?: string[]}} [opts]
  * @returns {Promise<number>} how many trashed nodes were deleted
  */
-export async function deleteFromTrash(name) {
-    const uids = (await list('/trash', { strict: true }))
-        .filter((e) => e.name === name && e.uid)
-        .map((e) => `/trash/${e.uid}`);
+export async function deleteFromTrash(name, { keep = [] } = {}) {
+    const skip = new Set(keep);
+    const uids = (await trashedUids(name))
+        .filter((uid) => !skip.has(uid))
+        .map((uid) => `/trash/${uid}`);
     if (!uids.length) throw new Error(`delete "${name}" failed: not found in /trash`);
     const res = await run(['filesystem', 'delete', ...uids]);
     if (res.code !== 0) {
