@@ -23,7 +23,7 @@ async function load({ ha = [], remote = [], fail = {} } = {}) {
     const staging = await mkdtemp(join(tmpdir(), 'pdb-flow-'));
 
     const supervisor = {
-        listBackups: async () => ha,
+        listBackups: async () => { if (fail.listBackups) throw fail.listBackups; return ha; },
         hostInfo: async () => ({ disk_free: 100, disk_total: 200 }),
         downloadBackup: async (slug, dest) => {
             calls.downloads.push(slug);
@@ -61,6 +61,7 @@ async function load({ ha = [], remote = [], fail = {} } = {}) {
     mock.module('../src/protonCli.mjs', { namedExports: cli });
 
     process.env.STAGING_DIR = staging;
+    process.env.DATA_DIR = staging; // backup-dates.json
     // Cache-bust so each test gets fresh module state (the sync guard is module-level).
     const o = await import(`../src/orchestrator.mjs?t=${Math.random().toString(36).slice(2)}`);
     return { o, calls, staging };
@@ -261,4 +262,61 @@ test('restoreToHA rejects a traversing remote name before touching anything', as
     const { o, calls } = await load({});
     await assert.rejects(() => o.restoreToHA('../../etc/passwd.tar'), /invalid backup name/i);
     assert.deepEqual(calls.restored, []);
+});
+
+// --- retention ordering & counting (P3, P4, P5, P9) --------------------------
+
+test('P3: a backup deleted from HA keeps its real date — the newest is not trashed', async () => {
+    // X is old but was uploaded late (backlog), so its Proton date is the newest.
+    const ha = [
+        backup('x', 'Automatic backup X', '2026-01-01T00:00:00.000Z'),
+        backup('y', 'Automatic backup Y', '2026-07-05T00:00:00.000Z'),
+    ];
+    const remote = [
+        entry('Automatic backup X (x).tar', 1048576, '2026-07-10T00:00:00.000Z'),
+        entry('Automatic backup Y (y).tar', 1048576, '2026-07-05T00:00:00.000Z'),
+    ];
+    const { o, calls } = await load({ ha, remote });
+    await o.runSync(true); // retention off (keep all): both dates are seen
+    ha.splice(0, 1); // the user deletes X from HA
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '1';
+    await o.pruneProton();
+    assert.deepEqual(calls.trashed, ['Automatic backup X (x).tar'], 'the really-oldest goes, not Y');
+});
+
+test('runSync does not upload a backup only to trash it (no upload/prune loop)', async () => {
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '2';
+    const { o, calls } = await load({
+        ha: [backup('a1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z'),
+             backup('a2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z'),
+             backup('a3', 'Automatic backup 3', '2026-07-03T00:00:00.000Z')],
+    });
+    await o.runSync(true);
+    assert.deepEqual(calls.uploads.sort(), ['Automatic backup 2 (a2).tar', 'Automatic backup 3 (a3).tar']);
+    assert.deepEqual(calls.trashed, []);
+});
+
+test('P5: a truncated copy does not take a keep slot from a good one', async () => {
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '2';
+    const { o, calls } = await load({
+        ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z'),
+             backup('s2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z'),
+             backup('s3', 'Automatic backup 3', '2026-07-03T00:00:00.000Z', 100)],
+        remote: [entry('Automatic backup 1 (s1).tar'),
+                 entry('Automatic backup 2 (s2).tar'),
+                 entry('Automatic backup 3 (s3).tar', 1024)], // truncated upload of the newest
+    });
+    await o.pruneProton();
+    assert.deepEqual(calls.trashed, [], 'the oldest GOOD copy must survive');
+});
+
+test('P9: pruneProton refuses to prune when the HA listing fails', async () => {
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '1';
+    const { o, calls } = await load({
+        remote: [entry('Automatic backup 1 (a1).tar', 1048576, '2026-07-01T00:00:00.000Z'),
+                 entry('Automatic backup 2 (a2).tar', 1048576, '2026-07-03T00:00:00.000Z')],
+        fail: { listBackups: new Error('Supervisor unreachable') },
+    });
+    await assert.rejects(() => o.pruneProton(), /Supervisor unreachable/);
+    assert.deepEqual(calls.trashed, []);
 });

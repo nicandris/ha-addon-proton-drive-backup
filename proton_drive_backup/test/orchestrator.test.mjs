@@ -420,10 +420,56 @@ test('selectProtonToPrune never prunes entries with no usable date', () => {
         { name: 'Automatic backup b (s2).tar', date: '2026-07-01T00:00:00.000Z' },
         { name: 'Automatic backup c (s3).tar', date: '2026-07-02T00:00:00.000Z' },
     ];
-    // keep 1: the undated one occupies the slot, so only the OLDER dated one goes.
+    // keep 1: the undated one is kept but takes no slot, so the NEWEST dated one
+    // (typically the backup just uploaded) survives and only the older goes.
     const pruned = o.selectProtonToPrune(entries, 1, 0);
     assert.ok(!pruned.includes('Automatic backup a (s1).tar'), 'undated must never be pruned');
-    assert.deepEqual(pruned.sort(), ['Automatic backup b (s2).tar', 'Automatic backup c (s3).tar']);
+    assert.deepEqual(pruned, ['Automatic backup b (s2).tar']);
+});
+
+test('P4: undated entries never cost the just-uploaded backup its keep slot', () => {
+    const entries = [
+        { name: 'Automatic backup old1 (u1).tar' },
+        { name: 'Automatic backup old2 (u2).tar' },
+        { name: 'Automatic backup new (n1).tar', date: '2026-07-24T00:00:00.000Z' },
+    ];
+    assert.deepEqual(o.selectProtonToPrune(entries, 2, 0), []);
+});
+
+test('withResolvedDates falls back to a remembered HA date before the Proton upload time', () => {
+    const entries = [{ name: 'Automatic backup X (sx).tar', date: '2026-07-10T00:00:00.000Z' }];
+    const out = o.withResolvedDates(entries, [], { sx: '2026-01-01T00:00:00.000Z' });
+    assert.equal(out[0].date, '2026-01-01T00:00:00.000Z');
+    // No remembered date: the Proton date stays.
+    assert.equal(o.withResolvedDates(entries, [], {})[0].date, '2026-07-10T00:00:00.000Z');
+});
+
+test('selectUploadsWithinRetention skips uploads retention would trash straight away', () => {
+    const ha = [
+        { slug: 'a1', name: 'Automatic backup 1', date: '2026-07-01T00:00:00.000Z', size: 1 },
+        { slug: 'a2', name: 'Automatic backup 2', date: '2026-07-02T00:00:00.000Z', size: 1 },
+        { slug: 'a3', name: 'Automatic backup 3', date: '2026-07-03T00:00:00.000Z', size: 1 },
+    ];
+    const toUpload = o.selectToUpload(ha, []);
+    const kept = o.selectUploadsWithinRetention(toUpload, [], ha, {}, 2, 0);
+    assert.deepEqual(kept.map((x) => x.slug).sort(), ['a2', 'a3']);
+    // Retention off: everything uploads.
+    assert.equal(o.selectUploadsWithinRetention(toUpload, [], ha, {}, 0, 0).length, 3);
+});
+
+test('retentionEntries leaves out a copy that fails verification against its HA backup', () => {
+    const ha = [
+        { slug: 's1', name: 'Automatic backup 1', date: '2026-07-01T00:00:00.000Z', size: 1 },
+        { slug: 's2', name: 'Automatic backup 2', date: '2026-07-02T00:00:00.000Z', size: 100 },
+    ];
+    const remote = [
+        { name: 'Automatic backup 1 (s1).tar', size: 1048576 },
+        { name: 'Automatic backup 2 (s2).tar', size: 1024 }, // truncated
+        { name: 'Automatic backup 0 (gone).tar', size: 5, date: '2026-06-01T00:00:00.000Z' }, // not in HA
+    ];
+    assert.deepEqual(o.retentionEntries(remote, ha, {}).map((e) => e.name), [
+        'Automatic backup 1 (s1).tar', 'Automatic backup 0 (gone).tar',
+    ]);
 });
 
 test('selectProtonToPrune with all-undated entries prunes nothing', () => {

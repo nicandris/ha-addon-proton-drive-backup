@@ -29,8 +29,11 @@ Requires Home Assistant **OS** or **Supervised** on **amd64** or **aarch64**
 3. Proton Drive is pruned automatically, in **two independent buckets**:
    `keep_automatic_in_proton` for the scheduled "Automatic backup" archives and
    `keep_app_in_proton` for everything else ("app" backups). Within each bucket
-   the oldest (by date) beyond the keep-count are trashed, so a burst of small
-   app backups can never evict the important automatic ones. Local Home Assistant
+   the oldest (by the Home Assistant backup's date) beyond the keep-count are
+   trashed, so a burst of small app backups can never evict the important
+   automatic ones. A Home Assistant backup that is already older than the
+   keep-count is not uploaded at all, and a copy whose size doesn't match its
+   Home Assistant backup doesn't count towards the keep-count. Local Home Assistant
    backups are **only** cleaned up when you press **Clean up local backups**, and
    only when they are already in Proton (see below).
 

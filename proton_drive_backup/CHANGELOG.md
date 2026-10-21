@@ -18,6 +18,22 @@
   ingress proxy are now refused.
 
 
+### Fixed
+
+- **Retention no longer trashes your newest backups.** Proton retention ordered
+  backups by Home Assistant's date when HA still had the backup, and by the
+  *upload* time otherwise, so an old backup uploaded late looked newest. The add-on
+  now remembers each backup's real date (in `/data/backup-dates.json`).
+- **No more upload → trash → upload loop.** A Home Assistant backup older than
+  the Proton keep-count was uploaded and trashed again on every sync. It is now
+  not uploaded.
+- **Backups without a date no longer use up keep slots,** which trashed the
+  backup that had just been uploaded.
+- **A truncated upload no longer counts towards the keep-count,** which pruned
+  the oldest good copy instead.
+- **Proton retention is skipped if Home Assistant can't be asked for backup
+  dates,** instead of pruning by the wrong dates.
+
 ## 0.4.15
 
 ### Changed
