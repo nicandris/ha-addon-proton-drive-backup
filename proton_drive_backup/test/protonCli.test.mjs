@@ -350,6 +350,14 @@ test('uploadFile/downloadPath/trash resolve on success', async () => {
     await cli.trash('/my-files/f/x.tar');
 });
 
+test('P11: a hung upload/download is killed by its timeout instead of hanging forever', async () => {
+    clearFake();
+    process.env.FAKE_FS_HANG_MS = '20000';
+    assert.ok(cli.TRANSFER_TIMEOUT_MS > 0, 'transfers must have a timeout by default');
+    await assert.rejects(() => cli.uploadFile('/tmp/x.tar', '/my-files/f', { timeoutMs: 200 }), /timeout/);
+    await assert.rejects(() => cli.downloadPath('/my-files/f/x.tar', '/tmp', { timeoutMs: 200 }), /timeout/);
+});
+
 test('uploadFile passes the 0.8.0 conflict flag (-f), not the removed -c', async () => {
     clearFake();
     process.env.FAKE_FS_CODE = '0';

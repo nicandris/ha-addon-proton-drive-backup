@@ -233,13 +233,13 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
     entries are still dropped. Only the mapped fields (count + names/sizes) are
     logged — never Proton's raw `NodeEntity` payload, which carries node/revision
     ids and hashes (logs get pasted into public issues).
-- `uploadFile(local, remoteParent, {conflictStrategy})` — `filesystem upload
-  -c <strategy> <local> <remoteParent>`, no timeout; throws with stderr on
+- `uploadFile(local, remoteParent, {conflictStrategy, timeoutMs})` — `filesystem upload
+  -f <strategy> <local> <remoteParent>`, killed after `TRANSFER_TIMEOUT_MS` (12 h); throws with stderr on
   failure. Default strategy `replace`. (The upload derives the remote name from
   the local basename, so the orchestrator stages the temp file under its final
   `<name> (<slug>).tar`.)
 - `downloadPath(remotePath, localFolder)` — `filesystem download` into a folder
-  (keeps the remote filename), no timeout; throws on failure.
+  (keeps the remote filename), killed after `TRANSFER_TIMEOUT_MS`; throws on failure.
 - `trash(remotePath)` — `filesystem trash`; throws on failure.
 
 ### Authentication — owned entirely by the CLI
@@ -383,7 +383,9 @@ a ~300 s **headers** timeout that can't be raised per request, and a
 `background:false` backup/restore blocks until HA finishes. On a multi-GB instance
 the call rejected with `UND_ERR_HEADERS_TIMEOUT` — the UI said "Backup creation
 failed: fetch failed" for a backup HA had actually completed, and `createBackupNow`
-skipped the mirror step. `node:http` has no default timeout. Short calls keep using
+skipped the mirror step. `node:http` has no default timeout, so the long calls
+(and the restore upload) get a 6 h socket-idle one, `LONG_CALL_TIMEOUT_MS` — a
+Supervisor that never answers must not hold the sync lock forever. Short calls keep using
 `fetch`. (There is no `getBackupInfo` — it was unused and removed in 0.4.1.)
 
 ---

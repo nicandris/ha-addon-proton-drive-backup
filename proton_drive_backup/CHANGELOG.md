@@ -45,6 +45,10 @@
 - **"Last sync" no longer moves forward when the sync failed.** It was updated
   (and "Sync complete" logged) even when every upload had failed, so the panel
   looked current while nothing was being backed up.
+- **A hung transfer no longer stops all backups.** Uploads, downloads and the
+  long Supervisor calls had no timeout, so one that never finished kept the
+  add-on "syncing" forever. They now give up after 12 hours (transfers) or 6
+  hours without a reply (Supervisor).
 
 ## 0.4.15
 

@@ -68,6 +68,9 @@ if (a[0] === 'filesystem') {
     if (sub === 'upload' || sub === 'download' || sub === 'trash') {
         const c = code('FAKE_FS_CODE', 0);
         if (c !== 0) err(env.FAKE_FS_MSG ?? `${sub} failed`);
+        // A transfer that never finishes (the caller's timeout must kill it).
+        const hang = code('FAKE_FS_HANG_MS', 0);
+        if (hang > 0) await new Promise((resolve) => setTimeout(resolve, hang));
         process.exit(c);
     }
 }

@@ -26,7 +26,7 @@ const BIN = process.env.PROTON_DRIVE_BIN || 'proton-drive';
 
 /**
  * Append to a captured stream buffer, keeping only the head and tail. A long
- * upload (no timeout) or a 5-minute login can emit unbounded progress output;
+ * upload (hours) or a 5-minute login can emit unbounded progress output;
  * the only consumers are exit-code checks, a short debug line and error text.
  */
 const CAP_BYTES = 64 * 1024;
@@ -81,6 +81,13 @@ export async function secureSessionStore() {
     }
     return { dir, files, changed };
 }
+
+/**
+ * Ceiling for one upload/download. Generous (a multi-GB backup over a slow
+ * uplink takes hours), but finite: with no timeout at all, a hung transfer held
+ * the sync lock forever and every later backup silently stopped.
+ */
+export const TRANSFER_TIMEOUT_MS = 12 * 3600 * 1000;
 
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
@@ -429,8 +436,8 @@ export function listStrict(remotePath) {
 }
 
 /**
- * Upload a local file into a remote parent folder. Uses no timeout (large
- * files). Throws with stderr on a nonzero exit.
+ * Upload a local file into a remote parent folder, killed after
+ * `TRANSFER_TIMEOUT_MS`. Throws with stderr on a nonzero exit or timeout.
  *
  * @param {string} localPath
  * @param {string} remoteParent
@@ -438,12 +445,12 @@ export function listStrict(remotePath) {
  * from `-c`, which now fails the upload outright with "Unknown option '-c'" —
  * `-d` is the folder equivalent and is not used here (we only upload files).
  *
- * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip')}} [opts]
+ * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip'), timeoutMs?:number}} [opts]
  */
-export async function uploadFile(localPath, remoteParent, { conflictStrategy = 'replace' } = {}) {
+export async function uploadFile(localPath, remoteParent, { conflictStrategy = 'replace', timeoutMs = TRANSFER_TIMEOUT_MS } = {}) {
     const res = await run(
         ['filesystem', 'upload', '-f', conflictStrategy, localPath, remoteParent],
-        { timeoutMs: 0 },
+        { timeoutMs },
     );
     if (res.code !== 0) {
         throw new Error(`upload "${localPath}" → "${remoteParent}" failed: ${errText(res)}`);
@@ -451,16 +458,17 @@ export async function uploadFile(localPath, remoteParent, { conflictStrategy = '
 }
 
 /**
- * Download a remote path into a local folder. No timeout (large files).
- * Throws with stderr on a nonzero exit.
+ * Download a remote path into a local folder, killed after
+ * `TRANSFER_TIMEOUT_MS`. Throws with stderr on a nonzero exit or timeout.
  *
  * @param {string} remotePath
  * @param {string} localFolder
+ * @param {{timeoutMs?:number}} [opts]
  */
-export async function downloadPath(remotePath, localFolder) {
+export async function downloadPath(remotePath, localFolder, { timeoutMs = TRANSFER_TIMEOUT_MS } = {}) {
     const res = await run(
         ['filesystem', 'download', remotePath, localFolder],
-        { timeoutMs: 0 },
+        { timeoutMs },
     );
     if (res.code !== 0) {
         throw new Error(`download "${remotePath}" → "${localFolder}" failed: ${errText(res)}`);
