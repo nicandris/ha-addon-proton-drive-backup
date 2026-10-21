@@ -1,8 +1,10 @@
 /**
  * Minimal ingress HTTP server for the add-on UI.
  *
- * Home Assistant ingress handles authentication, so this server is unauthenticated.
- * It serves a small self-contained HTML page plus a handful of JSON endpoints
+ * Home Assistant ingress handles authentication, so this server has none of its
+ * own — which is only safe because it answers nothing but HA's ingress proxy
+ * (`isAllowedClient`): the hassio network is shared with every other add-on. It
+ * serves a small self-contained HTML page plus a handful of JSON endpoints
  * that the page calls to show status and drive connect / sync / restore / delete.
  *
  * Authentication is a browser sign-in: POST /api/connect starts the CLI's
@@ -35,6 +37,19 @@ async function readBody(req) {
     } catch {
         return {};
     }
+}
+
+/**
+ * Home Assistant's ingress proxy — the only legitimate caller. The port is also
+ * reachable from every other container on the hassio network, and without this
+ * check any of them could restore/delete backups or bind its own Proton account
+ * via /api/connect + loginUrl. Loopback is allowed: nothing outside this
+ * container can use it.
+ */
+const INGRESS_PROXY_IP = '172.30.32.2';
+export function isAllowedClient(remoteAddress) {
+    const ip = String(remoteAddress || '').replace(/^::ffff:/, '');
+    return ip === INGRESS_PROXY_IP || ip === '127.0.0.1' || ip === '::1';
 }
 
 function sendJson(res, status, obj) {
@@ -711,6 +726,12 @@ async function handle(req, res) {
     const path = url.pathname.replace(/\/+$/, '') || '/';
     const method = req.method || 'GET';
     console.debug(`[ingress] ${method} ${path}`);
+
+    if (!isAllowedClient(req.socket.remoteAddress)) {
+        console.warn(`[ingress] Refused ${method} ${path} from ${req.socket.remoteAddress} (not the HA ingress proxy)`);
+        sendJson(res, 403, { ok: false, error: 'Forbidden' });
+        return;
+    }
 
     if (method === 'GET' && path === '/') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });

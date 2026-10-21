@@ -301,9 +301,8 @@ export function isNotFoundError(err) {
 /**
  * Is `name` a safe remote backup filename?
  *
- * `name` arrives from an unauthenticated HTTP body (ingress is only reachable
- * inside HA, but any other container on the Supervisor network can POST to it),
- * and it is interpolated into both a Drive path and a local staging path. A
+ * `name` arrives from an HTTP body (ingress only answers HA's proxy since 0.5.0,
+ * but keep the check as defence in depth), and it is interpolated into both a Drive path and a local staging path. A
  * `../../…` payload escaped the Drive folder AND the staging dir — and the
  * restore `finally` `rm()` ran even on failure, i.e. arbitrary file deletion in
  * the container. Only a bare `*.tar` filename is accepted.

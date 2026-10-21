@@ -11,6 +11,11 @@
   backup still carried a usable Proton session token. It is now
   `proton-drive-cli`. Backups made before this version still contain the token:
   press **Disconnect** and **Connect** once to sign that session out.
+- **The panel's server only answers Home Assistant.** It listened to every
+  container on the internal add-on network, so any other add-on could restore
+  or delete backups, or connect the add-on to *its own* Proton account and
+  receive your backups. Requests that don't come through Home Assistant's
+  ingress proxy are now refused.
 
 
 ## 0.4.15

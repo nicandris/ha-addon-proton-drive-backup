@@ -9,6 +9,7 @@
  */
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { networkInterfaces } from 'node:os';
 
 console.debug = () => {};
 console.log = () => {};
@@ -20,7 +21,7 @@ process.env.DATA_DIR = '/tmp';
 process.env.PROTON_DRIVE_BIN = '/nonexistent-proton-drive'; // never resolves; must not hang a request
 process.env.SUPERVISOR_URL = 'http://127.0.0.1:1';          // refused; must not hang a request
 
-const { startIngressServer } = await import('../src/ingress.mjs');
+const { startIngressServer, isAllowedClient } = await import('../src/ingress.mjs');
 
 let base;
 let server;
@@ -135,4 +136,35 @@ test('sync-now / create-backup return immediately rather than blocking on the CL
         assert.equal(r.status, 200, p);
         assert.ok(Date.now() - t0 < 1000, `${p} blocked`);
     }
+});
+
+test('only the HA ingress proxy (and loopback) may call the server', () => {
+    assert.equal(isAllowedClient('172.30.32.2'), true);
+    assert.equal(isAllowedClient('::ffff:172.30.32.2'), true);
+    assert.equal(isAllowedClient('127.0.0.1'), true);
+    assert.equal(isAllowedClient('::1'), true);
+    // Any other container on the hassio network.
+    assert.equal(isAllowedClient('172.30.33.5'), false);
+    assert.equal(isAllowedClient('::ffff:172.30.32.1'), false);
+    assert.equal(isAllowedClient(undefined), false);
+});
+
+test('a request from another host is refused before any route runs', async (t) => {
+    // Reach the server over a non-loopback interface so the source address is
+    // not 127.0.0.1 — the way another add-on container would.
+    const lan = Object.values(networkInterfaces()).flat()
+        .find((i) => i && i.family === 'IPv4' && !i.internal);
+    if (!lan) { t.skip('no non-loopback IPv4 interface'); return; }
+    const url = `http://${lan.address}:${server.address().port}`;
+    let r;
+    try {
+        r = await fetch(`${url}/api/connect`, { method: 'POST' });
+    } catch (err) {
+        // Some sandboxes drop self-connections over a LAN address.
+        t.skip(`cannot reach own LAN address (${err.cause?.message || err.message})`);
+        return;
+    }
+    assert.equal(r.status, 403);
+    const s = await fetch(`${url}/api/status`);
+    assert.equal(s.status, 403, 'status (and its loginUrl) must not leak either');
 });
