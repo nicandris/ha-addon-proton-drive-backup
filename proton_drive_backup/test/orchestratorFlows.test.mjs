@@ -607,3 +607,11 @@ test('the local clean-up remembers dates before deleting from HA', async () => {
     const saved = JSON.parse(await readFile(join(staging, 'backup-dates.json'), 'utf8'));
     assert.equal(saved['000000c1'].date, '2026-07-01T00:00:00.000Z', 'the deleted backup keeps its date');
 });
+
+test('P15: the first good sync after a restart dismisses a notification from before it', async () => {
+    const { o, calls } = await load({ ha: [backup('000000d1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
+    await o.runSync(); // fresh process: it can't know whether one is showing
+    assert.equal(calls.dismissed, 1);
+    await o.runSync();
+    assert.equal(calls.dismissed, 1, 'and only once');
+});

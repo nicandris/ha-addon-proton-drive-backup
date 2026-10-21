@@ -1080,7 +1080,10 @@ async function mirrorAndPrune() {
 }
 
 const ALERT_ID = 'proton_drive_backup';
-let alertShown = null; // the message currently notified, so it isn't re-sent each sync
+// The message currently notified, so it isn't re-sent each sync. Starts
+// UNKNOWN (undefined), not "none": a notification raised before a restart is
+// still in HA, so the first good sync dismisses it.
+let alertShown;
 
 /**
  * Raise a Home Assistant notification when a sync failed or the add-on needs a
@@ -1095,7 +1098,7 @@ async function updateAlert() {
         if (problem && problem !== alertShown) {
             await supervisor.notify(ALERT_ID, 'Proton Drive Backup', problem);
             alertShown = problem;
-        } else if (!problem && alertShown) {
+        } else if (!problem && alertShown !== null) {
             await supervisor.dismissNotification(ALERT_ID);
             alertShown = null;
         }
