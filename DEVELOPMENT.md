@@ -370,8 +370,10 @@ reports `needsLogin` and the UI drives `auth login`.
     the **only** config reader `main.mjs` uses (the duplicated `readConfig` there was
     removed in 0.4.1). Because it omits the password value, `main` can safely dump
     the whole object at debug level.
-  - Helpers `isOurRemoteFile` (a `(slug).tar` name — the user's other `.tar`
-    files in the folder are not ours) / `sanitizeName`
+  - Helpers `isOurRemoteFile` (a `(slug).tar` name whose slug is a Supervisor
+    slug — 8 lowercase hex, `sha1(...)[:8]` in `backups/utils.py` — or a slug we
+    know from HA/`backup-dates.json`; the user's other `.tar` files, even
+    `Holiday photos (2023).tar`, are not ours) / `sanitizeName`
     / `remoteNameFor` / `slugFromRemoteName` are type-guarded (a non-string
     `name` must not crash — regression covered by tests).
 - `pruneHALocalNow()` wraps `planHALocalPrune` with I/O (under the lock): it lists

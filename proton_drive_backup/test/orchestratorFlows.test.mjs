@@ -192,13 +192,13 @@ test('pruneProton trashes past the per-bucket limits, newest kept', async () => 
     process.env.KEEP_APP_IN_PROTON = '0'; // keep all app backups
     const { o, calls } = await load({
         remote: [
-            entry('Automatic backup old (a1).tar', 1048576, '2026-07-01T00:00:00.000Z'),
-            entry('Automatic backup new (a2).tar', 1048576, '2026-07-03T00:00:00.000Z'),
-            entry('Matter Server (m1).tar', 1048576, '2026-07-01T00:00:00.000Z'),
+            entry('Automatic backup old (8a8bb7cd).tar', 1048576, '2026-07-01T00:00:00.000Z'),
+            entry('Automatic backup new (693a9fdd).tar', 1048576, '2026-07-03T00:00:00.000Z'),
+            entry('Matter Server (ae7be26c).tar', 1048576, '2026-07-01T00:00:00.000Z'),
         ],
     });
     await o.pruneProton();
-    assert.deepEqual(calls.trashed, ['Automatic backup old (a1).tar']);
+    assert.deepEqual(calls.trashed, ['Automatic backup old (8a8bb7cd).tar']);
     assert.deepEqual(calls.purged, [], 'permanently_delete defaults off');
 });
 
@@ -208,13 +208,13 @@ test('pruneProton with permanently_delete also purges the trashed copy', async (
     process.env.PERMANENTLY_DELETE = 'true';
     const { o, calls } = await load({
         remote: [
-            entry('Automatic backup old (a1).tar', 1048576, '2026-07-01T00:00:00.000Z'),
-            entry('Automatic backup new (a2).tar', 1048576, '2026-07-03T00:00:00.000Z'),
+            entry('Automatic backup old (8a8bb7cd).tar', 1048576, '2026-07-01T00:00:00.000Z'),
+            entry('Automatic backup new (693a9fdd).tar', 1048576, '2026-07-03T00:00:00.000Z'),
         ],
     });
     await o.pruneProton();
-    assert.deepEqual(calls.trashed, ['Automatic backup old (a1).tar']);
-    assert.deepEqual(calls.purged, ['Automatic backup old (a1).tar']);
+    assert.deepEqual(calls.trashed, ['Automatic backup old (8a8bb7cd).tar']);
+    assert.deepEqual(calls.purged, ['Automatic backup old (8a8bb7cd).tar']);
 });
 
 test('P13: permanently_delete purges only the copy it just trashed', async () => {
@@ -427,6 +427,7 @@ test('P8: pruneProton never trashes the user\'s own .tar files in the folder', a
             entry('Automatic backup new (a2).tar', 1048576, '2026-07-03T00:00:00.000Z'),
             entry('Matter Server (m1).tar', 1048576, '2026-07-03T00:00:00.000Z'),
             entry('my-photos.tar', 1048576, '2026-07-01T00:00:00.000Z'),
+            entry('Holiday photos (2023).tar', 1048576, '2026-07-01T00:00:00.000Z'),
         ],
     });
     await o.pruneProton();

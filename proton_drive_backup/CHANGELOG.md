@@ -53,7 +53,8 @@
   after the previous one finished.
 - **Your own `.tar` files in the backup folder are left alone.** Any `.tar` in
   `drive_folder` counted as one of the add-on's backups and could be pruned;
-  only files named `<name> (<slug>).tar` count now.
+  only files named `<name> (<slug>).tar` with a real Home Assistant backup id
+  count now (so `Holiday photos (2023).tar` is yours, not a backup).
 - **"Last sync" no longer moves forward when the sync failed.** It was updated
   (and "Sync complete" logged) even when every upload had failed, so the panel
   looked current while nothing was being backed up.

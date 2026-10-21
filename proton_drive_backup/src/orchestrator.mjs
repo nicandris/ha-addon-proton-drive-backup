@@ -351,12 +351,24 @@ async function remoteFolder() {
 }
 
 /**
- * Is this remote file one of OURS — `<name> (<slug>).tar`, as `remoteNameFor`
- * writes it? Any other `.tar` the user keeps in the folder is theirs: it used
- * to count as a mirrored backup, so retention trashed it.
+ * A Supervisor backup slug: `create_slug()` in supervisor/backups/utils.py is
+ * `sha1(...).hexdigest()[:8]`. (Its schema only says `str`, so an imported backup
+ * can carry another slug — hence `knownSlugs` below.)
  */
-export function isOurRemoteFile(name) {
-    return slugFromRemoteName(name) !== null;
+const HA_SLUG_RE = /^[0-9a-f]{8}$/;
+
+/**
+ * Is this remote file one of OURS — `<name> (<slug>).tar`, as `remoteNameFor`
+ * writes it? Any other `.tar` the user keeps in the folder is theirs and must
+ * never be pruned: a bare `.tar` used to count, and so did any `(…)` suffix,
+ * e.g. `Holiday photos (2023).tar`. The slug must look like a Supervisor slug,
+ * or be one we actually know (`knownSlugs`: in HA now, or remembered).
+ * @param {string} name
+ * @param {Set<string>} [knownSlugs]
+ */
+export function isOurRemoteFile(name, knownSlugs) {
+    const slug = slugFromRemoteName(name);
+    return slug !== null && (HA_SLUG_RE.test(slug) || !!knownSlugs?.has(slug));
 }
 
 /**
@@ -531,10 +543,11 @@ export function selectToUpload(haBackups, remoteEntries, opts) {
  * @param {Array<{name:string,date?:string}>} entries
  * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = keep all.
  * @param {number} keepApp - newest app backups to keep; <=0 = keep all.
+ * @param {Set<string>} [knownSlugs] - HA/remembered slugs, see `isOurRemoteFile`.
  * @returns {string[]} remote filenames to trash (from both buckets).
  */
-export function selectProtonToPrune(entries, keepAutomatic, keepApp) {
-    const ours = (entries || []).filter((e) => isOurRemoteFile(e.name));
+export function selectProtonToPrune(entries, keepAutomatic, keepApp, knownSlugs) {
+    const ours = (entries || []).filter((e) => isOurRemoteFile(e.name, knownSlugs));
     const ts = (e) => {
         const t = new Date(e?.date ?? NaN).getTime();
         return Number.isNaN(t) ? null : t;
@@ -616,8 +629,15 @@ export function selectUploadsWithinRetention(toUpload, remoteEntries, haBackups,
         ...(remoteEntries || []).filter((e) => !pending.has(slugFromRemoteName(e?.name))),
         ...toUpload.map((x) => ({ name: x.remoteName })),
     ];
-    const doomed = new Set(selectProtonToPrune(withResolvedDates(after, haBackups, knownDates), keepAutomatic, keepApp));
+    const doomed = new Set(selectProtonToPrune(
+        withResolvedDates(after, haBackups, knownDates), keepAutomatic, keepApp, knownSlugsOf(haBackups, knownDates),
+    ));
     return toUpload.filter((x) => !doomed.has(x.remoteName));
+}
+
+/** Every slug we know is an HA backup: in HA now, or remembered from before. */
+function knownSlugsOf(haBackups, knownDates) {
+    return new Set([...(haBackups || []).map((b) => b?.slug).filter(Boolean), ...Object.keys(knownDates || {})]);
 }
 
 /** Where the slug → HA date map lives (persistent, survives HA-side deletion). */
@@ -911,7 +931,7 @@ export async function pruneProton() {
     ]);
     const knownDates = await rememberDates(haBackups, rawEntries);
     const entries = retentionEntries(rawEntries, haBackups, knownDates);
-    const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton);
+    const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton, knownSlugsOf(haBackups, knownDates));
     console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
     let failed = 0;
     for (const name of toPrune) {

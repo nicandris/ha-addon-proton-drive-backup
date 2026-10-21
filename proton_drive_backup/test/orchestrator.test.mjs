@@ -60,7 +60,13 @@ test('sanitizeName replaces slashes/control chars, collapses whitespace, trims',
 });
 
 test('isOurRemoteFile is true only for our "(slug).tar" files', () => {
-    assert.equal(o.isOurRemoteFile('Anything (s).tar'), true);
+    assert.equal(o.isOurRemoteFile('Anything (a1b2c3d4).tar'), true);
+    // A "(…)" suffix that is not a Supervisor slug is the user's file...
+    assert.equal(o.isOurRemoteFile('Holiday photos (2023).tar'), false);
+    assert.equal(o.isOurRemoteFile('Anything (s).tar'), false);
+    assert.equal(o.isOurRemoteFile('Upper (A1B2C3D4).tar'), false);
+    // ...unless it is a slug we actually know (an imported backup's own slug).
+    assert.equal(o.isOurRemoteFile('Imported (s).tar', new Set(['s'])), true);
     // The user's own archive in the same folder is not ours to prune (P8).
     assert.equal(o.isOurRemoteFile('Manual snapshot.tar'), false);
     assert.equal(o.isOurRemoteFile('notes.txt'), false);
@@ -220,41 +226,41 @@ test('isAutomaticBackup matches "Automatic backup …" on names AND remote filen
 
 test('selectProtonToPrune prunes each bucket by DATE independently (newest kept)', () => {
     const entries = [
-        { name: 'Automatic backup C (s3).tar', date: '2026-07-24T03:00:00.000Z' }, // auto newest
-        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' }, // auto oldest
-        { name: 'Automatic backup B (s2).tar', date: '2026-07-24T02:00:00.000Z' }, // auto mid
-        { name: 'Matter Server (m1).tar', date: '2026-07-24T05:00:00.000Z' },      // app newest
-        { name: 'Core Add-on (m2).tar', date: '2026-07-24T04:00:00.000Z' },        // app oldest
+        { name: 'Automatic backup C (c0828e03).tar', date: '2026-07-24T03:00:00.000Z' }, // auto newest
+        { name: 'Automatic backup A (8ddf8780).tar', date: '2026-07-24T01:00:00.000Z' }, // auto oldest
+        { name: 'Automatic backup B (fac98944).tar', date: '2026-07-24T02:00:00.000Z' }, // auto mid
+        { name: 'Matter Server (ae7be26c).tar', date: '2026-07-24T05:00:00.000Z' },      // app newest
+        { name: 'Core Add-on (aaf2f899).tar', date: '2026-07-24T04:00:00.000Z' },        // app oldest
     ];
     // keep 1 automatic + 1 app → prune 2 oldest automatic + 1 oldest app.
     const prune = o.selectProtonToPrune(entries, 1, 1);
     assert.deepEqual(prune.sort(), [
-        'Automatic backup A (s1).tar',
-        'Automatic backup B (s2).tar',
-        'Core Add-on (m2).tar',
+        'Automatic backup A (8ddf8780).tar',
+        'Automatic backup B (fac98944).tar',
+        'Core Add-on (aaf2f899).tar',
     ]);
 });
 
 test('selectProtonToPrune: an app-backup burst does NOT evict automatic backups', () => {
     const entries = [
-        { name: 'Automatic backup 1 (a1).tar', date: '2026-07-20T00:00:00.000Z' },
-        { name: 'Automatic backup 2 (a2).tar', date: '2026-07-21T00:00:00.000Z' },
+        { name: 'Automatic backup 1 (8a8bb7cd).tar', date: '2026-07-20T00:00:00.000Z' },
+        { name: 'Automatic backup 2 (693a9fdd).tar', date: '2026-07-21T00:00:00.000Z' },
         // A burst of many recent app backups.
-        { name: 'Add-on X (b1).tar', date: '2026-07-22T00:00:00.000Z' },
-        { name: 'Add-on Y (b2).tar', date: '2026-07-23T00:00:00.000Z' },
-        { name: 'Add-on Z (b3).tar', date: '2026-07-24T00:00:00.000Z' },
+        { name: 'Add-on X (edbab455).tar', date: '2026-07-22T00:00:00.000Z' },
+        { name: 'Add-on Y (fbfba2e4).tar', date: '2026-07-23T00:00:00.000Z' },
+        { name: 'Add-on Z (7a6f150b).tar', date: '2026-07-24T00:00:00.000Z' },
     ];
     // Keep all automatic (0), keep 1 app → only app backups are pruned; both
     // automatic survive despite being older than the app burst.
     const prune = o.selectProtonToPrune(entries, 0, 1);
-    assert.deepEqual(prune.sort(), ['Add-on X (b1).tar', 'Add-on Y (b2).tar']);
+    assert.deepEqual(prune.sort(), ['Add-on X (edbab455).tar', 'Add-on Y (fbfba2e4).tar']);
     assert.ok(!prune.some((n) => o.isAutomaticBackup(n)), 'automatic bucket untouched');
 });
 
 test('selectProtonToPrune: 0/negative keep per bucket keeps that bucket entirely', () => {
     const entries = [
-        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' },
-        { name: 'App B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
+        { name: 'Automatic backup A (8ddf8780).tar', date: '2026-07-24T01:00:00.000Z' },
+        { name: 'App B (fac98944).tar', date: '2026-07-24T02:00:00.000Z' },
     ];
     assert.deepEqual(o.selectProtonToPrune(entries, 0, 0), []);
     assert.deepEqual(o.selectProtonToPrune(entries, -1, -1), []);
@@ -262,8 +268,8 @@ test('selectProtonToPrune: 0/negative keep per bucket keeps that bucket entirely
 
 test('selectProtonToPrune keeps all when each bucket count <= its keep', () => {
     const entries = [
-        { name: 'Automatic backup A (s1).tar', date: '2026-07-24T01:00:00.000Z' },
-        { name: 'App B (s2).tar', date: '2026-07-24T02:00:00.000Z' },
+        { name: 'Automatic backup A (8ddf8780).tar', date: '2026-07-24T01:00:00.000Z' },
+        { name: 'App B (fac98944).tar', date: '2026-07-24T02:00:00.000Z' },
     ];
     assert.deepEqual(o.selectProtonToPrune(entries, 5, 5), []);
 });
@@ -449,22 +455,22 @@ test('withResolvedDates prefers the HA date, keeps the Proton date otherwise', (
 
 test('selectProtonToPrune never prunes entries with no usable date', () => {
     const entries = [
-        { name: 'Automatic backup a (s1).tar' },                                  // undated
-        { name: 'Automatic backup b (s2).tar', date: '2026-07-01T00:00:00.000Z' },
-        { name: 'Automatic backup c (s3).tar', date: '2026-07-02T00:00:00.000Z' },
+        { name: 'Automatic backup a (8ddf8780).tar' },                                  // undated
+        { name: 'Automatic backup b (fac98944).tar', date: '2026-07-01T00:00:00.000Z' },
+        { name: 'Automatic backup c (c0828e03).tar', date: '2026-07-02T00:00:00.000Z' },
     ];
     // keep 1: the undated one is kept but takes no slot, so the NEWEST dated one
     // (typically the backup just uploaded) survives and only the older goes.
     const pruned = o.selectProtonToPrune(entries, 1, 0);
-    assert.ok(!pruned.includes('Automatic backup a (s1).tar'), 'undated must never be pruned');
-    assert.deepEqual(pruned, ['Automatic backup b (s2).tar']);
+    assert.ok(!pruned.includes('Automatic backup a (8ddf8780).tar'), 'undated must never be pruned');
+    assert.deepEqual(pruned, ['Automatic backup b (fac98944).tar']);
 });
 
 test('P4: undated entries never cost the just-uploaded backup its keep slot', () => {
     const entries = [
-        { name: 'Automatic backup old1 (u1).tar' },
-        { name: 'Automatic backup old2 (u2).tar' },
-        { name: 'Automatic backup new (n1).tar', date: '2026-07-24T00:00:00.000Z' },
+        { name: 'Automatic backup old1 (e4774cdd).tar' },
+        { name: 'Automatic backup old2 (270c1b08).tar' },
+        { name: 'Automatic backup new (c82561ec).tar', date: '2026-07-24T00:00:00.000Z' },
     ];
     assert.deepEqual(o.selectProtonToPrune(entries, 2, 0), []);
 });
@@ -506,7 +512,7 @@ test('retentionEntries leaves out a copy that fails verification against its HA 
 });
 
 test('selectProtonToPrune with all-undated entries prunes nothing', () => {
-    const entries = [{ name: 'Automatic backup a (s1).tar' }, { name: 'Automatic backup b (s2).tar' }];
+    const entries = [{ name: 'Automatic backup a (8ddf8780).tar' }, { name: 'Automatic backup b (fac98944).tar' }];
     assert.deepEqual(o.selectProtonToPrune(entries, 1, 1), []);
 });
 
