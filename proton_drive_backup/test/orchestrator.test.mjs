@@ -130,8 +130,15 @@ test('sizesMatch tolerates HA MB rounding but rejects a truncated file', () => {
     assert.equal(o.sizesMatch(exact, 0), false);
     assert.equal(o.sizesMatch(exact, NaN), false);
     assert.equal(o.sizesMatch(null, exact), false);
-    // Small file: the absolute floor applies rather than the 1% term.
+    // Small file: the absolute floor applies.
     assert.equal(o.sizesMatch(1024, 1024 + 4096), true);
+});
+
+test('P12: a large copy a few MB short is NOT verified (no 1% slack)', () => {
+    const fiveGB = 5 * 1024 * MB;
+    assert.equal(o.sizesMatch(fiveGB, fiveGB - 40 * MB), false);
+    assert.equal(o.sizesMatch(fiveGB, fiveGB - 1 * MB), false);
+    assert.equal(o.sizesMatch(fiveGB, fiveGB - 5 * 1024), true); // HA's MB rounding
 });
 
 test('mirroredSlugs: size match → mirrored; mismatch/missing size → NOT mirrored', () => {

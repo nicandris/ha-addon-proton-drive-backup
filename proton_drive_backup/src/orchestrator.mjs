@@ -404,10 +404,11 @@ export function slugFromRemoteName(remoteName) {
  * `activeRevision.value.claimedSize` is in **bytes**. We normalise HA to bytes
  * (`size_bytes` when present, else `size * 1048576`), so the only intrinsic
  * imprecision is HA's 2-dp rounding (±~5 KiB). The 64 KiB floor covers that with
- * room to spare; the 1% relative term covers a future units/format change without
- * ever accepting an obviously truncated upload.
+ * room to spare. There is deliberately NO default relative term: the old 1% let
+ * a copy ~51 MB short of a 5 GB backup pass as verified — and a verified copy is
+ * what lets "Clean up local backups" delete the only good one.
  */
-export const SIZE_TOLERANCE = 0.01;
+export const SIZE_TOLERANCE = 0;
 const SIZE_TOLERANCE_FLOOR_BYTES = 64 * 1024;
 
 /**

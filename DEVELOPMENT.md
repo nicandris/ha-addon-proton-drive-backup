@@ -303,7 +303,7 @@ reports `needsLogin` and the UI drives `auth login`.
     bytes (`activeRevision.value.claimedSize`). `haBackupSizeBytes` normalises to
     bytes (`size_bytes` if present, else `size * 1048576`), so the only intrinsic
     error is HA's 2-dp rounding (±~5 KiB); `sizesMatch` allows
-    `max(1% , 64 KiB)`. A missing size on **either** side = NOT verified (fail
+    64 KiB (HA's MB rounding; no relative slack since 0.5.0). A missing size on **either** side = NOT verified (fail
     closed: re-upload, never delete locally). Before 0.4.1 a filename match alone
     counted as mirrored, so an upload interrupted after the node appeared was both
     skipped by the next sync and accepted as grounds to delete the last local copy.

@@ -49,6 +49,10 @@
   long Supervisor calls had no timeout, so one that never finished kept the
   add-on "syncing" forever. They now give up after 12 hours (transfers) or 6
   hours without a reply (Supervisor).
+- **A slightly short upload is no longer accepted as a good copy.** Sizes could
+  differ by 1%, so a 5 GB backup missing ~50 MB passed as verified — and a
+  verified copy is what lets **Clean up local backups** delete the local one. The
+  sizes must now match to within 64 KB.
 
 ## 0.4.15
 
