@@ -336,9 +336,13 @@ async function remoteFolder() {
     return path;
 }
 
-/** Any `.tar` in the configured folder is treated as a mirrored HA backup. */
+/**
+ * Is this remote file one of OURS — `<name> (<slug>).tar`, as `remoteNameFor`
+ * writes it? Any other `.tar` the user keeps in the folder is theirs: it used
+ * to count as a mirrored backup, so retention trashed it.
+ */
 export function isOurRemoteFile(name) {
-    return typeof name === 'string' && name.endsWith('.tar');
+    return slugFromRemoteName(name) !== null;
 }
 
 /**
@@ -507,8 +511,8 @@ export function selectToUpload(haBackups, remoteEntries, opts) {
  * keeps the newest `keepAutomatic`, the app bucket the newest `keepApp`. Within
  * each bucket, sort by DATE (newest first, `withResolvedDates`) and return
  * everything beyond that bucket's keep. keep<=0 for a bucket keeps ALL of it, so
- * an app-backup burst can never evict the automatic backups. Any `.tar` in the
- * folder is treated as a mirrored backup.
+ * an app-backup burst can never evict the automatic backups. Only our own
+ * `(slug).tar` files are considered (`isOurRemoteFile`).
  * @param {Array<{name:string,date?:string}>} entries
  * @param {number} keepAutomatic - newest automatic backups to keep; <=0 = keep all.
  * @param {number} keepApp - newest app backups to keep; <=0 = keep all.

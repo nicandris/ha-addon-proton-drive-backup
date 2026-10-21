@@ -39,6 +39,9 @@
 - **Changing the sync interval in the panel takes effect at once,** and the
   "Next sync" time no longer drifts: the next sync is scheduled one interval
   after the previous one finished.
+- **Your own `.tar` files in the backup folder are left alone.** Any `.tar` in
+  `drive_folder` counted as one of the add-on's backups and could be pruned;
+  only files named `<name> (<slug>).tar` count now.
 
 ## 0.4.15
 

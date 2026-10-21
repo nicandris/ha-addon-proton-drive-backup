@@ -58,9 +58,10 @@ test('sanitizeName replaces slashes/control chars, collapses whitespace, trims',
     assert.ok(!o.remoteNameFor({ name: 'a/b', slug: 's1' }).includes('a/b'));
 });
 
-test('isOurRemoteFile is true for any .tar, false otherwise / non-string', () => {
+test('isOurRemoteFile is true only for our "(slug).tar" files', () => {
     assert.equal(o.isOurRemoteFile('Anything (s).tar'), true);
-    assert.equal(o.isOurRemoteFile('Manual snapshot.tar'), true);
+    // The user's own archive in the same folder is not ours to prune (P8).
+    assert.equal(o.isOurRemoteFile('Manual snapshot.tar'), false);
     assert.equal(o.isOurRemoteFile('notes.txt'), false);
     assert.equal(o.isOurRemoteFile(123), false);
     assert.equal(o.isOurRemoteFile(null), false);

@@ -382,3 +382,17 @@ test('P7: changing the interval in the panel reschedules the timer', async () =>
         mock.timers.reset();
     }
 });
+
+test('P8: pruneProton never trashes the user\'s own .tar files in the folder', async () => {
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '1';
+    process.env.KEEP_APP_IN_PROTON = '1';
+    const { o, calls } = await load({
+        remote: [
+            entry('Automatic backup new (a2).tar', 1048576, '2026-07-03T00:00:00.000Z'),
+            entry('Matter Server (m1).tar', 1048576, '2026-07-03T00:00:00.000Z'),
+            entry('my-photos.tar', 1048576, '2026-07-01T00:00:00.000Z'),
+        ],
+    });
+    await o.pruneProton();
+    assert.deepEqual(calls.trashed, []);
+});
