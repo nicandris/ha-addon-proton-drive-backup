@@ -88,7 +88,10 @@ if (env.FAKE_BIG_STDOUT) {
     const chunk = 'progress '.repeat(1000);
     let sent = 0;
     while (sent < total) { process.stdout.write(chunk); sent += chunk.length; }
-    process.exit(code('FAKE_EXIT', 0));
+    // Exit only once the pipe has drained: process.exit() drops pending async
+    // pipe writes, so the parent sometimes saw too little output to truncate.
+    process.stdout.write('', () => process.exit(code('FAKE_EXIT', 0)));
+    await new Promise(() => {});
 }
 
 // Generic escape hatch for run()-level tests.
