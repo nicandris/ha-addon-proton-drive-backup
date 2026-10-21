@@ -103,7 +103,8 @@ subfolder whose name is the slug. That is why the repo name and the
 **Scheduling** (`orchestrator.scheduleNextSync`): one chained `setTimeout` —
 `main` arms it for 5 s after boot, and every sync re-arms it
 `backup_interval_hours` after it *finished* (nothing when that is 0). The delay is
-clamped to setTimeout's 2^31−1 ms limit (the schema caps the option at 596 h),
+clamped to setTimeout's 2^31−1 ms limit (596 h; deliberately NOT a schema cap —
+that would stop an existing install with a larger value from starting),
 and a panel change of the interval re-arms it at once.
 
 **Backup (sync) flow** (`orchestrator.runSync()`, under the operation lock):

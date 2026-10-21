@@ -710,6 +710,8 @@ export function planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp)
 // setTimeout's ceiling: a longer delay (> ~596 h) silently becomes 1 ms, which
 // used to run syncs back to back forever.
 const MAX_TIMER_MS = 2 ** 31 - 1;
+/** Longer intervals are clamped to this (no schema cap: it would stop existing installs starting). */
+export const MAX_SYNC_INTERVAL_HOURS = Math.floor(MAX_TIMER_MS / 3600000);
 let syncTimer = null;
 
 /**

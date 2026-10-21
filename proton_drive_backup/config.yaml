@@ -48,7 +48,7 @@ options:
   log_level: info
 schema:
   drive_folder: str
-  backup_interval_hours: int(0,596) # the longest delay a Node timer can hold
+  backup_interval_hours: int(0,)
   keep_automatic_in_proton: int(0,)
   keep_app_in_proton: int(0,)
   keep_automatic_in_ha: int(0,)

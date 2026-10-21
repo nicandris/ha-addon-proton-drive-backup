@@ -8,7 +8,7 @@ configuration:
     name: Check interval (hours)
     description: >-
       How often to check Home Assistant for new backups to upload (also on
-      start-up and on "Sync now"). 0 = start-up and manual only; at most 596.
+      start-up and on "Sync now"). 0 = start-up and manual only; above 596 counts as 596.
   keep_automatic_in_proton:
     name: Automatic backups to keep in Proton
     description: >-

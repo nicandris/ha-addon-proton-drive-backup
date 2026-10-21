@@ -12,7 +12,7 @@
 import { setLogLevel } from './logger.mjs';
 
 import { startIngressServer } from './ingress.mjs';
-import { cleanStagingDir, getRuntimeConfig, scheduleNextSync } from './orchestrator.mjs';
+import { cleanStagingDir, getRuntimeConfig, MAX_SYNC_INTERVAL_HOURS, scheduleNextSync } from './orchestrator.mjs';
 import { secureSessionStore } from './protonCli.mjs';
 
 async function main() {
@@ -40,6 +40,10 @@ async function main() {
 
     startIngressServer();
 
+    if (config.intervalHours > MAX_SYNC_INTERVAL_HOURS) {
+        console.warn(`[main] backup_interval_hours=${config.intervalHours} is longer than a timer can wait; `
+            + `syncing every ${MAX_SYNC_INTERVAL_HOURS} h instead`);
+    }
     // Initial sync shortly after startup; each sync then schedules the next one
     // `backup_interval_hours` after it finishes (none when that is 0).
     console.debug(`[main] Scheduler: first sync in 5 s, then every ${config.intervalHours}h (0 = none)`);

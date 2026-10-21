@@ -528,3 +528,10 @@ test('the panel\'s log level is saved as the add-on option, not just applied', a
         (await import('../src/logger.mjs')).setLogLevel('error');
     }
 });
+
+test('backup_interval_hours has no schema upper bound (an existing 720 must still start)', async () => {
+    const cfg = await readFile(new URL('../config.yaml', import.meta.url), 'utf8');
+    assert.match(cfg, /^ {2}backup_interval_hours: int\(0,\)$/m);
+    const { o } = await load({});
+    assert.equal(o.MAX_SYNC_INTERVAL_HOURS, 596);
+});
