@@ -532,7 +532,11 @@ means HA won't show an update — the user must uninstall/reinstall or use
 24 and an unpinned `nodejs` would follow the base image to a new major; the suite is
 verified on Node 24), then **download the pinned `proton-drive` binary** for the
 `BUILD_ARCH` (`amd64` → `linux-x64-musl`, `aarch64` → `linux-arm64-musl`) and
-verify it with `sha256sum -c` (any other arch fails the build explicitly). Copy
+verify it with `sha512sum -c` against **Proton's published** SHA-512 from
+`https://proton.me/download/drive/cli/version.json` (any other arch fails the
+build explicitly). A hash mismatch at an unchanged CLI version means Proton's
+file changed under a published version — an incident to investigate, never a
+hash to just update. Copy
 `src/`, then `CMD ["/run.sh"]` → `node /app/src/main.mjs`. There is no
 `npm install` / build in the image. LF endings are enforced by `.gitattributes`
 (CRLF would break the `#!/usr/bin/with-contenv bashio` shebang).
@@ -543,9 +547,9 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
 
 ## 11. Known limitations & gotchas
 
-- **CLI is early (`proton-drive` v0.9.0, pinned).** Pinned by URL + SHA-256 in
-  the Dockerfile. Bumping the CLI means updating both the URL and the hashes for
-  each arch.
+- **CLI is early (`proton-drive` v0.9.0, pinned).** Pinned by URL + Proton's
+  published SHA-512 in the Dockerfile. Bumping the CLI means updating both the
+  URL and the hashes for each arch, copied from Proton's `version.json`.
 - **`filesystem list --json` schema (fixed in 0.2.4).** The CLI emits a bare
   array of `NodeEntity` objects whose `name` is a `Result` (`{ok, value}`), not a
   string, with size at `activeRevision.value.claimedSize` and a lowercase

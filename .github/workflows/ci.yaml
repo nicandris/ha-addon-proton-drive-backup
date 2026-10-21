@@ -1,5 +1,5 @@
 # The add-on has a real test suite (node --test) that nothing ran until now, and
-# a Dockerfile that pins the Proton Drive CLI by URL + SHA-256. That pin has
+# a Dockerfile that pins the Proton Drive CLI by URL + SHA-512. That pin has
 # rotted server-side before — a build that stops resolving is the only warning
 # there is — so the image is also built weekly, not just on pull requests.
 name: CI
