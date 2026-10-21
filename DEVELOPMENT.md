@@ -94,7 +94,7 @@ subfolder whose name is the slug. That is why the repo name and the
   │                         persistent /data:                       │
   │                           proton-drive-cli/  (CLI session —     │
   │                             excluded from HA backups)           │
-  │                           backup-dates.json  (slug → HA date)   │
+  │                           backup-dates.json  (slug → date,size) │
   │                         staging (temp .tar) — OUTSIDE /data:     │
   │                           $STAGING_DIR, else the container tmp   │
   └───────────────────────────────────────────────────────────────┘
@@ -128,8 +128,10 @@ and a panel change of the interval re-arms it at once.
    independent buckets** (automatic vs app, classified by `isAutomaticBackup(name)`):
    `keep_automatic_in_proton` and `keep_app_in_proton`, oldest by date first
    within each bucket. Dates are the HA backup's (`withResolvedDates`: live HA
-   listing, else `/data/backup-dates.json`, only then the Proton upload time), and
-   copies that fail size verification don't count (`retentionEntries`).
+   listing, else `/data/backup-dates.json`; with neither the entry is **undated** —
+   never the Proton upload time — so it is kept, takes no keep slot and is
+   logged), and copies that fail size verification against HA's or the
+   remembered size don't count (`retentionEntries`).
    `selectProtonToPrune(entries, keepAutomatic, keepApp)` is the pure decision fn;
    `keep<=0` for a bucket keeps all of it, so an app-backup burst can never evict
    the automatic bucket. A failed HA listing aborts the prune.

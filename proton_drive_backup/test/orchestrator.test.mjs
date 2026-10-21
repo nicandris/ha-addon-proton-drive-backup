@@ -440,7 +440,7 @@ test('validateSettingsPatch rejects a non-object or empty patch', () => {
 
 // --- 0.4.3: date resolution, bucket counts, prune planning ------------------
 
-test('withResolvedDates prefers the HA date, keeps the Proton date otherwise', () => {
+test('withResolvedDates prefers the HA date and never falls back to the Proton upload time', () => {
     const entries = [
         { name: 'Automatic backup 1 (s1).tar', date: '2020-01-01T00:00:00.000Z' },
         { name: 'Automatic backup 2 (s2).tar' },
@@ -450,7 +450,8 @@ test('withResolvedDates prefers the HA date, keeps the Proton date otherwise', (
     const out = o.withResolvedDates(entries, ha);
     assert.equal(out[0].date, '2026-07-01T00:00:00.000Z'); // HA wins
     assert.equal(out[1].date, '2026-07-02T00:00:00.000Z'); // filled in
-    assert.equal(out[2].date, '2021-05-05T00:00:00.000Z'); // untouched
+    // No HA date and none remembered: undated, NOT the Proton upload time.
+    assert.equal(out[2].date, undefined);
 });
 
 test('selectProtonToPrune never prunes entries with no usable date', () => {
@@ -475,12 +476,12 @@ test('P4: undated entries never cost the just-uploaded backup its keep slot', ()
     assert.deepEqual(o.selectProtonToPrune(entries, 2, 0), []);
 });
 
-test('withResolvedDates falls back to a remembered HA date before the Proton upload time', () => {
+test('withResolvedDates falls back to a remembered HA date, else leaves the entry undated', () => {
     const entries = [{ name: 'Automatic backup X (sx).tar', date: '2026-07-10T00:00:00.000Z' }];
-    const out = o.withResolvedDates(entries, [], { sx: '2026-01-01T00:00:00.000Z' });
+    const out = o.withResolvedDates(entries, [], { sx: { date: '2026-01-01T00:00:00.000Z', size: 1 } });
     assert.equal(out[0].date, '2026-01-01T00:00:00.000Z');
-    // No remembered date: the Proton date stays.
-    assert.equal(o.withResolvedDates(entries, [], {})[0].date, '2026-07-10T00:00:00.000Z');
+    // No remembered date: undated (the Proton date is the upload time).
+    assert.equal(o.withResolvedDates(entries, [], {})[0].date, undefined);
 });
 
 test('selectUploadsWithinRetention skips uploads retention would trash straight away', () => {

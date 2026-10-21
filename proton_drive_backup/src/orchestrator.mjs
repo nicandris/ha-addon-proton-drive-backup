@@ -579,38 +579,54 @@ export function selectProtonToPrune(entries, keepAutomatic, keepApp, knownSlugs)
  * Fill in each Proton entry's date from the matching Home Assistant backup, which
  * is authoritative — the CLI sometimes omits `modificationTime`/`creationTime`,
  * and an upload rewrites the remote timestamp anyway. A backup no longer in HA
- * uses the HA date remembered while it was (`knownDates`); only then the
- * Proton-reported date, which is the UPLOAD time. Mixing the two used to make a
- * late (backlog) upload look newest, so the really newest backups were trashed.
+ * uses the HA date remembered while it was (`known`). With neither, the entry
+ * is left UNDATED — never the Proton-reported date: that is the UPLOAD time, and
+ * mixing it in made a late (backlog) upload look newest, so the really newest
+ * backups were trashed. Undated entries are never pruned and take no keep slot.
  * Pure.
  *
  * @param {Array<{name:string,date?:string}>} entries
  * @param {Array<{slug:string,date?:string}>} haBackups
- * @param {Record<string,string>} [knownDates] - slug → HA date, from `rememberDates`.
+ * @param {Record<string,{date?:string,size?:number|null}>} [known] - from `rememberBackups`.
  */
-export function withResolvedDates(entries, haBackups, knownDates = {}) {
+export function withResolvedDates(entries, haBackups, known = {}) {
     const bySlug = new Map((haBackups || []).filter((b) => b?.slug).map((b) => [b.slug, b.date]));
     return (entries || []).map((e) => {
         const slug = slugFromRemoteName(e?.name);
-        const haDate = bySlug.get(slug) || (slug && Object.hasOwn(knownDates, slug) ? knownDates[slug] : undefined);
-        return haDate ? { ...e, date: haDate } : e;
+        const date = bySlug.get(slug) || (slug && Object.hasOwn(known, slug) ? known[slug]?.date : undefined);
+        return { ...e, date: date || undefined };
     });
 }
 
 /**
  * The Proton entries retention may count and prune: dates resolved, and copies
- * that FAIL verification against their HA backup (truncated/unsized) left out.
- * Counted, a broken copy took a keep slot and the oldest GOOD copy was pruned
- * instead; it is replaced by the next upload anyway. Pure.
+ * that FAIL verification left out — against their HA backup, or against the
+ * size remembered for a backup that has since left HA. Counted, a broken copy
+ * took a keep slot and the oldest GOOD copy was pruned instead. Pure.
  */
-export function retentionEntries(remoteEntries, haBackups, knownDates) {
+export function retentionEntries(remoteEntries, haBackups, known = {}) {
     const haSlugs = new Set((haBackups || []).filter((b) => b?.slug).map((b) => b.slug));
-    const verified = mirroredSlugs(haBackups, remoteEntries);
+    // Reference sizes: HA's own, plus the remembered size of backups HA no longer has.
+    const references = [
+        ...(haBackups || []),
+        ...Object.entries(known)
+            .filter(([slug, k]) => !haSlugs.has(slug) && k?.size)
+            .map(([slug, k]) => ({ slug, size_bytes: k.size })),
+    ];
+    const checkable = new Set(references.map((b) => b?.slug));
+    const verified = mirroredSlugs(references, remoteEntries);
     const countable = (remoteEntries || []).filter((e) => {
         const slug = slugFromRemoteName(e?.name);
-        return !haSlugs.has(slug) || verified.has(slug);
+        return !checkable.has(slug) || verified.has(slug);
     });
-    return withResolvedDates(countable, haBackups, knownDates);
+    const resolved = withResolvedDates(countable, haBackups, known);
+    const unknown = resolved.filter((e) => !e.date && isOurRemoteFile(e.name, knownSlugsOf(haBackups, known)));
+    if (unknown.length) {
+        console.warn(`[orchestrator] ${unknown.length} Proton backup(s) have no known Home Assistant date `
+            + `(uploaded before 0.5.0 and since deleted from HA): ${unknown.map((e) => e.name).join(', ')} — `
+            + 'retention keeps them and does not count them; delete them from the panel if you no longer need them.');
+    }
+    return resolved;
 }
 
 /**
@@ -621,7 +637,7 @@ export function retentionEntries(remoteEntries, haBackups, knownDates) {
  * @param {ReturnType<typeof selectToUpload>} toUpload
  * @returns {ReturnType<typeof selectToUpload>} the uploads worth doing.
  */
-export function selectUploadsWithinRetention(toUpload, remoteEntries, haBackups, knownDates, keepAutomatic, keepApp) {
+export function selectUploadsWithinRetention(toUpload, remoteEntries, haBackups, known, keepAutomatic, keepApp) {
     if (!(keepAutomatic > 0) && !(keepApp > 0)) return toUpload;
     const pending = new Set(toUpload.map((x) => x.slug));
     // Proton after this sync: every copy not about to be (re)uploaded, plus the uploads.
@@ -630,34 +646,37 @@ export function selectUploadsWithinRetention(toUpload, remoteEntries, haBackups,
         ...toUpload.map((x) => ({ name: x.remoteName })),
     ];
     const doomed = new Set(selectProtonToPrune(
-        withResolvedDates(after, haBackups, knownDates), keepAutomatic, keepApp, knownSlugsOf(haBackups, knownDates),
+        withResolvedDates(after, haBackups, known), keepAutomatic, keepApp, knownSlugsOf(haBackups, known),
     ));
     return toUpload.filter((x) => !doomed.has(x.remoteName));
 }
 
 /** Every slug we know is an HA backup: in HA now, or remembered from before. */
-function knownSlugsOf(haBackups, knownDates) {
-    return new Set([...(haBackups || []).map((b) => b?.slug).filter(Boolean), ...Object.keys(knownDates || {})]);
+function knownSlugsOf(haBackups, known) {
+    return new Set([...(haBackups || []).map((b) => b?.slug).filter(Boolean), ...Object.keys(known || {})]);
 }
 
-/** Where the slug → HA date map lives (persistent, survives HA-side deletion). */
+/** Where the slug → {date, size} map lives (persistent, survives HA-side deletion). */
 function datesFile() {
     return join(process.env.DATA_DIR || '/data', 'backup-dates.json');
 }
 
 /**
- * Remember each HA backup's date, so retention can still order a backup by its
- * REAL date after it has been deleted from HA. Entries whose backup is in
- * neither HA nor Proton are dropped, so the file stays small. Best-effort: a
- * read/write failure only means falling back to Proton dates.
- * @returns {Promise<Record<string,string>>} slug → date
+ * Remember each HA backup's date and size, so retention can still order a
+ * backup by its REAL date — and size-check its Proton copy — after it has been
+ * deleted from HA. Entries whose backup is in neither HA nor Proton are dropped,
+ * so the file stays small. Best-effort: a read/write failure only means those
+ * copies count as undated.
+ * @returns {Promise<Record<string,{date?:string,size:number|null}>>} by slug
  */
-async function rememberDates(haBackups, remoteEntries) {
+async function rememberBackups(haBackups, remoteEntries) {
     let known = {};
     try {
         known = JSON.parse(await readFile(datesFile(), 'utf8')) || {};
     } catch { /* first run, or unreadable: start fresh */ }
-    for (const b of haBackups || []) if (b?.slug && b.date) known[b.slug] = b.date;
+    for (const b of haBackups || []) {
+        if (b?.slug && b.date) known[b.slug] = { date: b.date, size: haBackupSizeBytes(b) };
+    }
     const live = new Set([
         ...(haBackups || []).map((b) => b?.slug),
         ...(remoteEntries || []).map((e) => slugFromRemoteName(e?.name)),
@@ -848,11 +867,11 @@ async function syncBackupsToProton() {
 
     // Dedup by HA slug + size — every HA backup (automatic + manual) that isn't
     // verifiably mirrored in Proton — minus the ones retention would trash at once.
-    const knownDates = await rememberDates(haBackups, remoteEntries);
+    const known = await rememberBackups(haBackups, remoteEntries);
     const { keepAutomaticInProton, keepAppInProton } = cfg();
     const missing = selectToUpload(haBackups, remoteEntries);
     const toUpload = selectUploadsWithinRetention(
-        missing, remoteEntries, haBackups, knownDates, keepAutomaticInProton, keepAppInProton,
+        missing, remoteEntries, haBackups, known, keepAutomaticInProton, keepAppInProton,
     );
     if (toUpload.length < missing.length) {
         console.log(`[orchestrator] Not uploading ${missing.length - toUpload.length} backup(s) older than the Proton keep-count (they would be pruned straight away)`);
@@ -929,9 +948,9 @@ export async function pruneProton() {
         cli.listStrict(folder),
         supervisor.listBackups(),
     ]);
-    const knownDates = await rememberDates(haBackups, rawEntries);
-    const entries = retentionEntries(rawEntries, haBackups, knownDates);
-    const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton, knownSlugsOf(haBackups, knownDates));
+    const known = await rememberBackups(haBackups, rawEntries);
+    const entries = retentionEntries(rawEntries, haBackups, known);
+    const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton, knownSlugsOf(haBackups, known));
     console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
     let failed = 0;
     for (const name of toPrune) {

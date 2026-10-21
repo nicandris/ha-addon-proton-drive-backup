@@ -191,6 +191,8 @@ test('pruneProton trashes past the per-bucket limits, newest kept', async () => 
     process.env.KEEP_AUTOMATIC_IN_PROTON = '1';
     process.env.KEEP_APP_IN_PROTON = '0'; // keep all app backups
     const { o, calls } = await load({
+        ha: [backup('8a8bb7cd', 'Automatic backup old', '2026-07-01T00:00:00.000Z'),
+             backup('693a9fdd', 'Automatic backup new', '2026-07-03T00:00:00.000Z')],
         remote: [
             entry('Automatic backup old (8a8bb7cd).tar', 1048576, '2026-07-01T00:00:00.000Z'),
             entry('Automatic backup new (693a9fdd).tar', 1048576, '2026-07-03T00:00:00.000Z'),
@@ -207,6 +209,8 @@ test('pruneProton with permanently_delete also purges the trashed copy', async (
     process.env.KEEP_APP_IN_PROTON = '0';
     process.env.PERMANENTLY_DELETE = 'true';
     const { o, calls } = await load({
+        ha: [backup('8a8bb7cd', 'Automatic backup old', '2026-07-01T00:00:00.000Z'),
+             backup('693a9fdd', 'Automatic backup new', '2026-07-03T00:00:00.000Z')],
         remote: [
             entry('Automatic backup old (8a8bb7cd).tar', 1048576, '2026-07-01T00:00:00.000Z'),
             entry('Automatic backup new (693a9fdd).tar', 1048576, '2026-07-03T00:00:00.000Z'),
@@ -535,4 +539,45 @@ test('backup_interval_hours has no schema upper bound (an existing 720 must stil
     assert.match(cfg, /^ {2}backup_interval_hours: int\(0,\)$/m);
     const { o } = await load({});
     assert.equal(o.MAX_SYNC_INTERVAL_HOURS, 596);
+});
+
+// --- 0.4.x upgrade: no backup-dates.json yet (follow-up to P3) ---------------
+
+test('upgrade: copies no longer in HA with no remembered date are never pruned by upload time', async () => {
+    // a4/a5 are old but were uploaded late, so Proton dates them newest; a6/a7
+    // were uploaded on time. All four have left HA; a8 is in HA. No dates file.
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '3';
+    const { o, calls } = await load({
+        ha: [backup('000000a8', 'Automatic backup 8', '2026-07-08T00:00:00.000Z')],
+        remote: [
+            entry('Automatic backup 4 (000000a4).tar', 1048576, '2026-07-20T00:00:00.000Z'),
+            entry('Automatic backup 5 (000000a5).tar', 1048576, '2026-07-20T00:00:00.000Z'),
+            entry('Automatic backup 6 (000000a6).tar', 1048576, '2026-07-06T00:00:00.000Z'),
+            entry('Automatic backup 7 (000000a7).tar', 1048576, '2026-07-07T00:00:00.000Z'),
+            entry('Automatic backup 8 (000000a8).tar', 1048576, '2026-07-08T00:00:00.000Z'),
+        ],
+    });
+    await o.runSync();
+    assert.deepEqual(calls.trashed, [], 'undatable copies must not be ordered by upload time');
+    assert.deepEqual(calls.uploads, []);
+});
+
+test('a truncated copy of a backup no longer in HA is checked against its remembered size', async () => {
+    const ha = [
+        backup('000000s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z'),
+        backup('000000s2', 'Automatic backup 2', '2026-07-02T00:00:00.000Z'),
+        backup('000000s3', 'Automatic backup 3', '2026-07-03T00:00:00.000Z'),
+    ];
+    const remote = [
+        entry('Automatic backup 1 (000000s1).tar'),
+        entry('Automatic backup 2 (000000s2).tar'),
+        entry('Automatic backup 3 (000000s3).tar'),
+    ];
+    const { o, calls } = await load({ ha, remote });
+    await o.runSync(); // retention off: sizes and dates are remembered
+    ha.splice(2, 1); // s3 leaves HA...
+    remote[2] = entry('Automatic backup 3 (000000s3).tar', 1024); // ...and its copy turns out truncated
+    process.env.KEEP_AUTOMATIC_IN_PROTON = '2';
+    await o.pruneProton();
+    assert.deepEqual(calls.trashed, [], 'the truncated s3 must not take a slot and push out s1');
 });

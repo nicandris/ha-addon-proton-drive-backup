@@ -35,14 +35,18 @@
 - **Retention no longer trashes your newest backups.** Proton retention ordered
   backups by Home Assistant's date when HA still had the backup, and by the
   *upload* time otherwise, so an old backup uploaded late looked newest. The add-on
-  now remembers each backup's real date (in `/data/backup-dates.json`).
+  now remembers each backup's real date and size (in `/data/backup-dates.json`).
+  Copies already gone from Home Assistant before this update have no known date:
+  they are kept, don't count towards the keep-count, and are listed in the log —
+  delete them from the panel if you don't need them.
 - **No more upload → trash → upload loop.** A Home Assistant backup older than
   the Proton keep-count was uploaded and trashed again on every sync. It is now
   not uploaded.
 - **Backups without a date no longer use up keep slots,** which trashed the
   backup that had just been uploaded.
 - **A truncated upload no longer counts towards the keep-count,** which pruned
-  the oldest good copy instead.
+  the oldest good copy instead — also once the backup has left Home Assistant
+  (its size is remembered).
 - **Proton retention is skipped if Home Assistant can't be asked for backup
   dates,** instead of pruning by the wrong dates.
 - **A very long `backup_interval_hours` no longer syncs non-stop.** Above 596
