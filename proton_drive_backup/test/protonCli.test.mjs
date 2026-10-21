@@ -447,6 +447,16 @@ test('deleteFromTrash deletes every same-named trashed node by UID', async () =>
     assert.equal(await cli.deleteFromTrash('x (s1).tar'), 2);
 });
 
+test('P13: deleteFromTrash leaves the nodes in `keep` (trashed earlier) alone', async () => {
+    process.env.FAKE_LIST_JSON = JSON.stringify([
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~old' },
+        { name: { ok: true, value: 'x (s1).tar' }, uid: 'v~new' },
+    ]);
+    process.env.FAKE_DELETE_EXPECT = '/trash/v~new';
+    assert.deepEqual(await cli.trashedUids('x (s1).tar'), ['v~old', 'v~new']);
+    assert.equal(await cli.deleteFromTrash('x (s1).tar', { keep: ['v~old'] }), 1);
+});
+
 test('deleteFromTrash throws when the name is not in the trash', async () => {
     process.env.FAKE_LIST_JSON = '[]';
     await assert.rejects(() => cli.deleteFromTrash('x (s1).tar'), /not found in \/trash/);

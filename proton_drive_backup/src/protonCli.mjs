@@ -486,17 +486,29 @@ export async function trash(remotePath) {
     }
 }
 
+/** UIDs of the trashed nodes named `name` (trash is flat; names repeat). */
+export async function trashedUids(name) {
+    return (await list('/trash', { strict: true }))
+        .filter((e) => e.name === name && e.uid)
+        .map((e) => e.uid);
+}
+
 /**
- * Permanently delete every trashed file named `name`. Trash is flat, and a name
- * shared by several trashed nodes (e.g. copies replaced by a re-upload) is only
- * addressable by node UID — so always delete by UID, never by name.
+ * Permanently delete the trashed nodes named `name`, except the UIDs in `keep`.
+ * Trash is flat, and a name shared by several trashed nodes is only addressable
+ * by node UID — so always delete by UID, never by name. Pass `keep` = what was
+ * already in the trash BEFORE your own trash call (`trashedUids`): purging every
+ * same-named node also destroyed copies the user trashed earlier and may still
+ * want back.
  * @param {string} name - bare filename, as it was before trashing
+ * @param {{keep?: string[]}} [opts]
  * @returns {Promise<number>} how many trashed nodes were deleted
  */
-export async function deleteFromTrash(name) {
-    const uids = (await list('/trash', { strict: true }))
-        .filter((e) => e.name === name && e.uid)
-        .map((e) => `/trash/${e.uid}`);
+export async function deleteFromTrash(name, { keep = [] } = {}) {
+    const skip = new Set(keep);
+    const uids = (await trashedUids(name))
+        .filter((uid) => !skip.has(uid))
+        .map((uid) => `/trash/${uid}`);
     if (!uids.length) throw new Error(`delete "${name}" failed: not found in /trash`);
     const res = await run(['filesystem', 'delete', ...uids]);
     if (res.code !== 0) {

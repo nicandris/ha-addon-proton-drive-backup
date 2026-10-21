@@ -53,6 +53,8 @@
   differ by 1%, so a 5 GB backup missing ~50 MB passed as verified — and a
   verified copy is what lets **Clean up local backups** delete the local one. The
   sizes must now match to within 64 KB.
+- **`permanently_delete` only empties the copy it just trashed.** It purged every
+  trashed file with the same name, including copies you had trashed earlier.
 
 ## 0.4.15
 

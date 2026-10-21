@@ -18,8 +18,8 @@ import { join } from 'node:path';
 const FOLDER = '/my-files/Home Assistant Backups';
 
 /** Fresh doubles + a fresh module registry for each test. */
-async function load({ ha = [], remote = [], fail = {} } = {}) {
-    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [] };
+async function load({ ha = [], remote = [], fail = {}, trashBefore = {} } = {}) {
+    const calls = { uploads: [], trashed: [], deleted: [], downloads: [], created: [], restored: [], purged: [], purgeKeep: [] };
     const staging = await mkdtemp(join(tmpdir(), 'pdb-flow-'));
 
     const supervisor = {
@@ -54,7 +54,8 @@ async function load({ ha = [], remote = [], fail = {} } = {}) {
         },
         downloadPath: async () => {},
         trash: async (p) => { calls.trashed.push(p.replace(FOLDER + '/', '')); },
-        deleteFromTrash: async (name) => { calls.purged.push(name); return 1; },
+        trashedUids: async (name) => (trashBefore[name] || []),
+        deleteFromTrash: async (name, opts) => { calls.purged.push(name); calls.purgeKeep.push(opts?.keep ?? null); return 1; },
     };
 
     mock.module('../src/supervisor.mjs', { namedExports: supervisor });
@@ -202,6 +203,13 @@ test('pruneProton with permanently_delete also purges the trashed copy', async (
     await o.pruneProton();
     assert.deepEqual(calls.trashed, ['Automatic backup old (a1).tar']);
     assert.deepEqual(calls.purged, ['Automatic backup old (a1).tar']);
+});
+
+test('P13: permanently_delete purges only the copy it just trashed', async () => {
+    process.env.PERMANENTLY_DELETE = 'true';
+    const { o, calls } = await load({ trashBefore: { 'Automatic backup 1 (a1).tar': ['v~earlier'] } });
+    await o.deleteProtonBackup('Automatic backup 1 (a1).tar');
+    assert.deepEqual(calls.purgeKeep, [['v~earlier']], 'the earlier-trashed copy must be kept');
 });
 
 test('pruneHALocalNow deletes only size-verified mirrored backups and counts honestly', async () => {

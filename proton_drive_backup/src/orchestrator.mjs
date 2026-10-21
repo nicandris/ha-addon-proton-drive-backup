@@ -772,8 +772,11 @@ export async function listProtonBackups() {
  * Proton trash too — trashed files still count against the storage quota.
  */
 async function removeRemote(folder, name) {
+    const permanently = cfg().permanentlyDelete;
+    // Only the node trashed HERE is purged — not older same-named trash.
+    const alreadyTrashed = permanently ? await cli.trashedUids(name) : [];
     await cli.trash(`${folder}/${name}`);
-    if (cfg().permanentlyDelete) await cli.deleteFromTrash(name);
+    if (permanently) await cli.deleteFromTrash(name, { keep: alreadyTrashed });
 }
 
 /** Delete one mirrored backup (trash, or permanently) by its remote filename. */
