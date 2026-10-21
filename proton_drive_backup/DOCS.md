@@ -146,13 +146,14 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 
 ## Security
 
-> **A Home Assistant backup contains your Proton session.** The Proton CLI keeps
+> **Backups made before 0.5.0 contain your Proton session.** The Proton CLI keeps
 > its sign-in session in the add-on's `/data` directory, and Home Assistant's
-> *full* backups include add-on data — so any full backup (including the copies
-> this add-on uploads) carries a **usable Proton Drive session token**. Treat those
-> archives as sensitive: set a `backup_password` so they are encrypted, and be
-> careful where you copy them. If an archive leaks, use **Disconnect** in the
-> panel (or sign the session out from your Proton account) to invalidate it.
+> *full* backups include add-on data. Since 0.5.0 that directory is excluded from
+> backups (the exclusion added in 0.4.9 never matched), so new backups no longer
+> carry it — but **older** full backups, including the copies already uploaded to
+> Proton, still hold a **usable Proton Drive session token**. Treat them as
+> sensitive, or press **Disconnect** and **Connect** once to sign that session
+> out and start a new one. After restoring a backup, press **Connect** again.
 
 
 **What is protected:**
@@ -172,8 +173,8 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 - The CLI's **session token** is written to the app's `/data` directory
   (Supervisor-managed storage) via the CLI's `unsafe_file` credentials store —
   the container has no OS keyring, so the session lives as a plain file there.
-  Anyone with file-level access to your host, or to an unencrypted backup of it,
-  could read that session. This is how HA app storage works generally; be aware
+  Anyone with file-level access to your host could read that session (it is
+  left out of Home Assistant backups since 0.5.0). This is how HA app storage works generally; be aware
   of it.
 
 **Recommendations:** keep your HA host secure (disk encryption, restricted file

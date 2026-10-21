@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.0
+
+### Security
+
+- **Your Proton sign-in is now really left out of Home Assistant backups.** The
+  exclusion added in 0.4.9 was written as `/data/proton-drive-cli/*`, but the
+  Supervisor matches it against its own path for the file
+  (`/data/addons/data/<slug>/proton-drive-cli/…`), so it never matched and every
+  backup still carried a usable Proton session token. It is now
+  `proton-drive-cli`. Backups made before this version still contain the token:
+  press **Disconnect** and **Connect** once to sign that session out.
+
+
 ## 0.4.15
 
 ### Changed
@@ -103,6 +116,8 @@
   *Trade-off:* restoring a backup no longer restores the Proton session — press
   **Connect** once after a restore. That is deliberate: a backup should not carry a
   live credential.
+  **Correction (0.5.0):** the exclusion did not take effect until 0.5.0 — see
+  there.
 - **The session files are no longer world-readable.** The CLI writes them `0644`
   in a `0755` directory; they are now tightened to `0600` inside a `0700`
   directory, at start-up and again after each sign-in (a fresh login rewrites them

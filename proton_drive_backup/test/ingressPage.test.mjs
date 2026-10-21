@@ -98,11 +98,42 @@ test('the page shows progress while the first status is still unknown', () => {
     assert.match(scripts[0], /s\.pending \? 1200/);
 });
 
-test('the Proton session is excluded from Home Assistant backups', async () => {
-    // Without backup_exclude, every HA full backup (including the ones this add-on
-    // uploads) would contain a usable Proton session token.
+/**
+ * Python's PurePath.match(), which the Supervisor uses for backup_exclude: a
+ * relative pattern matches the path's LAST components (right-anchored), an
+ * absolute one must match the whole path. `*` never crosses a `/`.
+ */
+function purePathMatch(path, pattern) {
+    const parts = path.split('/').filter(Boolean);
+    const pat = pattern.split('/').filter(Boolean);
+    if (pattern.startsWith('/') ? pat.length !== parts.length : pat.length > parts.length) return false;
+    const tail = parts.slice(parts.length - pat.length);
+    return pat.every((seg, i) => new RegExp(`^${seg.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '[^/]*').replace(/\?/g, '[^/]')}$`).test(tail[i]));
+}
+
+test('purePathMatch mirrors PurePath.match (right-anchored relative, whole-path absolute)', () => {
+    assert.equal(purePathMatch('/data/addons/data/s/proton-drive-cli/x', 'proton-drive-cli/*'), true);
+    assert.equal(purePathMatch('/data/addons/data/s/proton-drive-cli', 'proton-drive-cli'), true);
+    assert.equal(purePathMatch('/data/addons/data/s/proton-drive-cli/x', '/data/proton-drive-cli/*'), false);
+    assert.equal(purePathMatch('/data/proton-drive-cli/x', '/data/proton-drive-cli/*'), true);
+});
+
+test('the Proton session is excluded from Home Assistant backups (as the Supervisor matches it)', async () => {
+    // Without a WORKING backup_exclude, every HA full backup (including the ones
+    // this add-on uploads) contains a usable Proton session token. The Supervisor
+    // matches each pattern against its own path for the file, not the
+    // container's /data — 0.4.9 shipped "/data/proton-drive-cli/*", which never matched.
     const { readFile } = await import('node:fs/promises');
     const cfg = await readFile(new URL('../config.yaml', import.meta.url), 'utf8');
-    assert.match(cfg, /^backup_exclude:/m, 'config.yaml has no backup_exclude');
-    assert.match(cfg, /proton-drive-cli/, 'the session store is not excluded');
+    const block = cfg.match(/^backup_exclude:\n((?:\s+- .+\n)+)/m);
+    assert.ok(block, 'config.yaml has no backup_exclude list');
+    const patterns = [...block[1].matchAll(/- (.+)/g)].map((m) => m[1].trim().replace(/^["']|["']$/g, ''));
+    const supervisorDir = '/data/addons/data/a1b2c3d4_proton_drive_backup/proton-drive-cli';
+    const excluded = (p) => patterns.some((pat) => purePathMatch(p, pat));
+    // The directory itself (Supervisor then never recurses into it)...
+    assert.ok(excluded(supervisorDir), `session dir not excluded by ${patterns.join(', ')}`);
+    // ...and, belt and braces, the files directly in it.
+    assert.ok(excluded(`${supervisorDir}/session.json`), 'session files not excluded');
+    // Nothing else in /data is.
+    assert.equal(excluded('/data/addons/data/a1b2c3d4_proton_drive_backup/options.json'), false);
 });

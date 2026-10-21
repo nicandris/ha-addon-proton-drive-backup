@@ -1,5 +1,5 @@
 name: Proton Drive Backup
-version: "0.4.15"
+version: "0.5.0"
 slug: proton_drive_backup
 description: Mirror your Home Assistant backups to Proton Drive using the official Proton Drive CLI.
 url: https://github.com/nicandris/ha-addon-proton-drive-backup
@@ -12,8 +12,13 @@ init: false
 # ones this add-on uploads to Proton — would carry a USABLE Proton session token.
 # Excluding it means a restored backup asks you to press Connect again, which is
 # the right trade for not shipping a live credential inside every archive.
+# The Supervisor matches these with PurePath.match() against ITS path
+# (/data/addons/data/<slug>/proton-drive-cli/...), not the container's /data, so
+# they must be RELATIVE: an absolute "/data/proton-drive-cli/*" never matches.
+# The bare directory name excludes the whole directory (it is not recursed into).
 backup_exclude:
-  - /data/proton-drive-cli/*
+  - proton-drive-cli
+  - proton-drive-cli/*
 hassio_api: true
 hassio_role: manager
 ingress: true
