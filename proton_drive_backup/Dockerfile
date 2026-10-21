@@ -1,4 +1,6 @@
-FROM ghcr.io/home-assistant/base:3.24
+# Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
+# change what we build on; Dependabot bumps tag and digest together.
+FROM ghcr.io/home-assistant/base:3.24@sha256:8fde4170393bdf7a121ea4d6e34b417e1d0b90125948459f9f9f70cdf5d77c16
 # Pin the Node MAJOR explicitly: Alpine 3.23+ ships Node 24, and an unpinned
 # `apk add nodejs` would silently follow the base image to a new major.
 # The test suite is verified on Node 24.

@@ -526,7 +526,7 @@ means HA won't show an update — the user must uninstall/reinstall or use
 **Rebuild**. Always bump *up*.
 
 ### Deploy
-`Dockerfile`: `FROM ghcr.io/home-assistant/base:3.24` (explicit — the
+`Dockerfile`: `FROM ghcr.io/home-assistant/base:3.24@sha256:…` (pinned by digest; explicit — the
 `BUILD_FROM` arg is no longer auto-provided by recent Supervisor versions),
 `apk add --no-cache 'nodejs~=24'` (**pin the Node major** — Alpine 3.23+ ships Node
 24 and an unpinned `nodejs` would follow the base image to a new major; the suite is
