@@ -17,7 +17,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { chmod, mkdir, readdir, stat } from 'node:fs/promises';
+import { chmod, mkdir, readFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 /** Absolute path (or bare name on $PATH) of the proton-drive binary. */
@@ -83,11 +83,25 @@ export async function secureSessionStore() {
 }
 
 /**
- * Ceiling for one upload/download. Generous (a multi-GB backup over a slow
- * uplink takes hours), but finite: with no timeout at all, a hung transfer held
- * the sync lock forever and every later backup silently stopped.
+ * An upload/download is killed once it has made NO progress for this long —
+ * no output from the CLI and no bytes moved (its /proc/<pid>/io counters, on
+ * Linux). With no timeout at all, a hung transfer held the sync lock forever;
+ * a fixed wall-clock limit instead killed every big upload on a slow uplink.
  */
-export const TRANSFER_TIMEOUT_MS = 12 * 3600 * 1000;
+export const TRANSFER_STALL_MS = 30 * 60 * 1000;
+/** Backstop for a transfer that keeps "progressing" forever (e.g. retry spam). */
+export const TRANSFER_CEILING_MS = 72 * 3600 * 1000;
+
+/** The CLI's total read+write syscall bytes, or null where /proc isn't available. */
+async function ioBytes(pid) {
+    try {
+        const text = await readFile(`/proc/${pid}/io`, 'utf8');
+        const field = (name) => Number(text.match(new RegExp(`^${name}: (\\d+)`, 'm'))?.[1] ?? 0);
+        return field('rchar') + field('wchar');
+    } catch {
+        return null;
+    }
+}
 
 /** The user's Proton Drive root section that holds their own files. */
 const MY_FILES = '/my-files';
@@ -135,11 +149,12 @@ function childEnv() {
  * Run the CLI with the given argv. Never rejects on a nonzero exit code.
  *
  * @param {string[]} args - CLI arguments (no binary name).
- * @param {{timeoutMs?:number, cwd?:string}} [opts] - timeoutMs<=0 disables the
- *   timeout (use for large uploads/downloads).
+ * @param {{timeoutMs?:number, stallMs?:number, cwd?:string}} [opts] -
+ *   timeoutMs<=0 disables the wall-clock timeout; stallMs>0 also kills the child
+ *   after that long without progress (output, or I/O bytes on Linux).
  * @returns {Promise<{code:number, stdout:string, stderr:string}>}
  */
-export function run(args, { timeoutMs = 120000, cwd } = {}) {
+export function run(args, { timeoutMs = 120000, stallMs = 0, cwd } = {}) {
     return new Promise((resolve, reject) => {
         console.debug(`[protonCli] run: ${BIN} ${args.join(' ')}`);
         const child = spawn(BIN, args, {
@@ -150,7 +165,10 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
         let stdout = '';
         let stderr = '';
         let timer = null;
+        let stallTimer = null;
         let killedByTimeout = false;
+        let killedByStall = false;
+        let lastProgress = Date.now();
 
         if (timeoutMs > 0) {
             timer = setTimeout(() => {
@@ -158,22 +176,41 @@ export function run(args, { timeoutMs = 120000, cwd } = {}) {
                 child.kill('SIGKILL');
             }, timeoutMs);
         }
+        if (stallMs > 0) {
+            let lastIo = null;
+            stallTimer = setInterval(async () => {
+                const io = await ioBytes(child.pid);
+                if (io !== null && io !== lastIo) {
+                    lastIo = io;
+                    lastProgress = Date.now();
+                }
+                if (Date.now() - lastProgress > stallMs) {
+                    killedByStall = true;
+                    child.kill('SIGKILL');
+                }
+            }, Math.max(50, Math.min(60000, Math.floor(stallMs / 4))));
+        }
+        const stopTimers = () => {
+            if (timer) clearTimeout(timer);
+            if (stallTimer) clearInterval(stallTimer);
+        };
 
-        child.stdout.on('data', (d) => { stdout = capped(stdout, d.toString()); });
-        child.stderr.on('data', (d) => { stderr = capped(stderr, d.toString()); });
+        child.stdout.on('data', (d) => { lastProgress = Date.now(); stdout = capped(stdout, d.toString()); });
+        child.stderr.on('data', (d) => { lastProgress = Date.now(); stderr = capped(stderr, d.toString()); });
 
         child.on('error', (err) => {
-            if (timer) clearTimeout(timer);
+            stopTimers();
             reject(err); // binary missing / not executable — a real failure
         });
 
         child.on('close', (code, signal) => {
-            if (timer) clearTimeout(timer);
+            stopTimers();
             // A signal-killed child reports code=null. Mapping that straight to 1
             // made an OOM kill indistinguishable from an ordinary CLI error —
             // the output just stopped mid-line and the caller reported "exit 1".
-            const exitCode = killedByTimeout ? 124 : (code ?? (signal ? 128 : 1));
-            if (killedByTimeout) stderr += `\n[protonCli] killed after ${timeoutMs}ms timeout`;
+            const exitCode = (killedByTimeout || killedByStall) ? 124 : (code ?? (signal ? 128 : 1));
+            if (killedByStall) stderr += `\n[protonCli] killed after ${stallMs}ms without progress (stall timeout)`;
+            else if (killedByTimeout) stderr += `\n[protonCli] killed after ${timeoutMs}ms timeout`;
             else if (signal) stderr += `\n[protonCli] killed by ${signal}`
                 + (signal === 'SIGKILL' ? ' — most likely the out-of-memory killer, not a Proton error' : '');
             console.debug(`[protonCli] exit ${exitCode} (${BIN} ${args[0] || ''} ${args[1] || ''})`);
@@ -448,7 +485,8 @@ export function listStrict(remotePath) {
 
 /**
  * Upload a local file into a remote parent folder, killed after
- * `TRANSFER_TIMEOUT_MS`. Throws with stderr on a nonzero exit or timeout.
+ * `TRANSFER_STALL_MS` without progress. Throws with stderr on a nonzero exit or
+ * timeout.
  *
  * @param {string} localPath
  * @param {string} remoteParent
@@ -456,12 +494,14 @@ export function listStrict(remotePath) {
  * from `-c`, which now fails the upload outright with "Unknown option '-c'" —
  * `-d` is the folder equivalent and is not used here (we only upload files).
  *
- * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip'), timeoutMs?:number}} [opts]
+ * @param {{conflictStrategy?:('create-new-revision'|'rename'|'replace'|'skip'), timeoutMs?:number, stallMs?:number}} [opts]
  */
-export async function uploadFile(localPath, remoteParent, { conflictStrategy = 'replace', timeoutMs = TRANSFER_TIMEOUT_MS } = {}) {
+export async function uploadFile(localPath, remoteParent, {
+    conflictStrategy = 'replace', timeoutMs = TRANSFER_CEILING_MS, stallMs = TRANSFER_STALL_MS,
+} = {}) {
     const res = await run(
         ['filesystem', 'upload', '-f', conflictStrategy, localPath, remoteParent],
-        { timeoutMs },
+        { timeoutMs, stallMs },
     );
     if (res.code !== 0) {
         throw new Error(`upload "${localPath}" → "${remoteParent}" failed: ${errText(res)}`);
@@ -470,16 +510,19 @@ export async function uploadFile(localPath, remoteParent, { conflictStrategy = '
 
 /**
  * Download a remote path into a local folder, killed after
- * `TRANSFER_TIMEOUT_MS`. Throws with stderr on a nonzero exit or timeout.
+ * `TRANSFER_STALL_MS` without progress. Throws with stderr on a nonzero exit or
+ * timeout.
  *
  * @param {string} remotePath
  * @param {string} localFolder
- * @param {{timeoutMs?:number}} [opts]
+ * @param {{timeoutMs?:number, stallMs?:number}} [opts]
  */
-export async function downloadPath(remotePath, localFolder, { timeoutMs = TRANSFER_TIMEOUT_MS } = {}) {
+export async function downloadPath(remotePath, localFolder, {
+    timeoutMs = TRANSFER_CEILING_MS, stallMs = TRANSFER_STALL_MS,
+} = {}) {
     const res = await run(
         ['filesystem', 'download', remotePath, localFolder],
-        { timeoutMs },
+        { timeoutMs, stallMs },
     );
     if (res.code !== 0) {
         throw new Error(`download "${remotePath}" → "${localFolder}" failed: ${errText(res)}`);

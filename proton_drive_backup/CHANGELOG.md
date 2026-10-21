@@ -64,8 +64,9 @@
   looked current while nothing was being backed up.
 - **A hung transfer no longer stops all backups.** Uploads, downloads and the
   long Supervisor calls had no timeout, so one that never finished kept the
-  add-on "syncing" forever. They now give up after 12 hours (transfers) or 6
-  hours without a reply (Supervisor).
+  add-on "syncing" forever. A transfer now gives up after 30 minutes with no
+  progress at all (a slow upload that keeps moving is never cut off), and a
+  Supervisor call after 6 hours without a reply.
 - **A slightly short upload is no longer accepted as a good copy.** Sizes could
   differ by 1%, so a 5 GB backup missing ~50 MB passed as verified — and a
   verified copy is what lets **Clean up local backups** delete the local one. The

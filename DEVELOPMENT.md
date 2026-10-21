@@ -203,9 +203,12 @@ which Proton retention sorts by.)
 - Spawns the CLI and **never rejects on a nonzero exit** — it resolves
   `{code, stdout, stderr}` so callers decide what an error means. (It *does*
   reject on a spawn `error` — a missing/non-executable binary is a real failure.)
-- `timeoutMs` defaults to 120 s; `<= 0` disables the timer. Uploads/downloads
-  pass `TRANSFER_TIMEOUT_MS` (12 h) — finite, so a hung transfer can't hold the
-  lock forever. On timeout the child is `SIGKILL`ed and the result is
+- `timeoutMs` defaults to 120 s; `<= 0` disables the timer. `stallMs > 0`
+  also kills the child after that long without progress — no stdout/stderr and
+  no change in `/proc/<pid>/io` `rchar+wchar` (Linux; output only elsewhere).
+  Uploads/downloads pass `TRANSFER_STALL_MS` (30 min) plus a 72 h
+  `TRANSFER_CEILING_MS` backstop: a hung transfer can't hold the lock forever,
+  but a slow one that keeps moving is never cut off. On timeout the child is `SIGKILL`ed and the result is
   `code: 124` with a timeout note appended to stderr.
 
 ### Failure detection is by EXIT CODE + stderr, never JSON
@@ -257,12 +260,12 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
     logged — never Proton's raw `NodeEntity` payload, which carries node/revision
     ids and hashes (logs get pasted into public issues).
 - `uploadFile(local, remoteParent, {conflictStrategy, timeoutMs})` — `filesystem upload
-  -f <strategy> <local> <remoteParent>`, killed after `TRANSFER_TIMEOUT_MS` (12 h); throws with stderr on
+  -f <strategy> <local> <remoteParent>`, killed after `TRANSFER_STALL_MS` without progress; throws with stderr on
   failure. Default strategy `replace`. (The upload derives the remote name from
   the local basename, so the orchestrator stages the temp file under its final
   `<name> (<slug>).tar`.)
 - `downloadPath(remotePath, localFolder)` — `filesystem download` into a folder
-  (keeps the remote filename), killed after `TRANSFER_TIMEOUT_MS`; throws on failure.
+  (keeps the remote filename), same stall timeout; throws on failure.
 - `trash(remotePath)` — `filesystem trash`; throws on failure.
 - `trashedUids(name)` / `deleteFromTrash(name, {keep})` — the trash is flat, so
   same-named nodes are addressed by UID. `removeRemote` records the UIDs already

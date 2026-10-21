@@ -377,9 +377,21 @@ test('uploadFile/downloadPath/trash resolve on success', async () => {
 test('P11: a hung upload/download is killed by its timeout instead of hanging forever', async () => {
     clearFake();
     process.env.FAKE_FS_HANG_MS = '20000';
-    assert.ok(cli.TRANSFER_TIMEOUT_MS > 0, 'transfers must have a timeout by default');
+    assert.ok(cli.TRANSFER_STALL_MS > 0 && cli.TRANSFER_CEILING_MS > 0, 'transfers must have timeouts by default');
     await assert.rejects(() => cli.uploadFile('/tmp/x.tar', '/my-files/f', { timeoutMs: 200 }), /timeout/);
     await assert.rejects(() => cli.downloadPath('/my-files/f/x.tar', '/tmp', { timeoutMs: 200 }), /timeout/);
+});
+
+test('a transfer is killed when it stalls, not while it is making progress', async () => {
+    clearFake();
+    // Silent and hung: killed by the stall timeout, long before the ceiling.
+    process.env.FAKE_FS_HANG_MS = '20000';
+    await assert.rejects(() => cli.uploadFile('/tmp/x.tar', '/my-files/f', { stallMs: 300 }), /without progress/);
+    // Slow but alive (output every 50 ms for 1.2 s, i.e. 4x the stall window): finishes.
+    process.env.FAKE_FS_HANG_MS = '1200';
+    process.env.FAKE_FS_TICK_MS = '50';
+    await cli.uploadFile('/tmp/x.tar', '/my-files/f', { stallMs: 300 });
+    await cli.downloadPath('/my-files/f/x.tar', '/tmp', { stallMs: 300 });
 });
 
 test('uploadFile passes the 0.8.0 conflict flag (-f), not the removed -c', async () => {

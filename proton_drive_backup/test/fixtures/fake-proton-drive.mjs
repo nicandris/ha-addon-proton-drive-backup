@@ -70,7 +70,11 @@ if (a[0] === 'filesystem') {
         if (c !== 0) err(env.FAKE_FS_MSG ?? `${sub} failed`);
         // A transfer that never finishes (the caller's timeout must kill it).
         const hang = code('FAKE_FS_HANG_MS', 0);
+        // Optional progress output while "transferring".
+        const tick = code('FAKE_FS_TICK_MS', 0);
+        const ticker = tick > 0 ? setInterval(() => process.stdout.write('.'), tick) : null;
         if (hang > 0) await new Promise((resolve) => setTimeout(resolve, hang));
+        if (ticker) clearInterval(ticker);
         process.exit(c);
     }
 }
