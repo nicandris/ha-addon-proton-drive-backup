@@ -42,6 +42,9 @@
 - **Your own `.tar` files in the backup folder are left alone.** Any `.tar` in
   `drive_folder` counted as one of the add-on's backups and could be pruned;
   only files named `<name> (<slug>).tar` count now.
+- **"Last sync" no longer moves forward when the sync failed.** It was updated
+  (and "Sync complete" logged) even when every upload had failed, so the panel
+  looked current while nothing was being backed up.
 
 ## 0.4.15
 

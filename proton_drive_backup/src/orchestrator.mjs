@@ -847,7 +847,7 @@ async function syncBackupsToProton() {
             if (item.sizeBytes) {
                 const free = await freeSpaceBytes(tmpDir());
                 if (free != null && free < item.sizeBytes) {
-                    skipped++;
+                    errors++; // not backed up — a failure, not a benign skip
                     recordError(`Not enough space to stage ${item.slug} ("${item.name}"): needs ${fmtBytes(item.sizeBytes)}, only ${fmtBytes(free)} free in ${tmpDir()}.`);
                     continue;
                 }
@@ -875,13 +875,14 @@ async function syncBackupsToProton() {
         }
     }
     console.debug(`[orchestrator] syncBackupsToProton done: ${uploaded} uploaded, ${skipped} skipped, ${errors} errors`);
+    return { uploaded, skipped, errors };
 }
 
 export async function pruneProton() {
     const { keepAutomaticInProton, keepAppInProton } = cfg();
     if (keepAutomaticInProton <= 0 && keepAppInProton <= 0) {
         console.debug('[orchestrator] pruneProton: retention disabled (both buckets keep all), skipping');
-        return;
+        return 0;
     }
 
     const folder = await remoteFolder();
@@ -897,14 +898,17 @@ export async function pruneProton() {
     const entries = retentionEntries(rawEntries, haBackups, knownDates);
     const toPrune = selectProtonToPrune(entries, keepAutomaticInProton, keepAppInProton);
     console.debug(`[orchestrator] pruneProton: keep_automatic=${keepAutomaticInProton} keep_app=${keepAppInProton} to_prune=${toPrune.length}`);
+    let failed = 0;
     for (const name of toPrune) {
         try {
             console.log(`[orchestrator] Pruning Proton backup "${name}"`);
             await removeRemote(folder, name);
         } catch (err) {
+            failed++;
             recordError(`Proton prune failed: ${describeError(err)}`);
         }
     }
+    return failed;
 }
 
 /**
@@ -977,10 +981,16 @@ export async function runSync(force = false) {
 
         console.debug('[orchestrator] runSync: uploading missing HA backups to Proton...');
         setActivity('Checking Proton Drive…');
-        await syncBackupsToProton();
+        const { errors } = await syncBackupsToProton();
         console.debug('[orchestrator] runSync: pruning Proton...');
         setActivity('Pruning old Proton backups…');
-        await pruneProton();
+        const failures = errors + await pruneProton();
+        // lastSync means "last SUCCESSFUL sync" — a run where uploads failed
+        // must not make the backups look current.
+        if (failures) {
+            console.error(`[orchestrator] Sync finished with ${failures} error(s) — last successful sync stays ${state.lastSync || 'never'}`);
+            return;
+        }
 
         state.lastSync = new Date().toISOString();
         console.log(`[orchestrator] Sync complete at ${state.lastSync}`);
@@ -1029,9 +1039,13 @@ export async function createBackupNow() {
         }
         // Mirror the just-created backup (and any others) to Proton.
         setActivity('Checking Proton Drive…');
-        await syncBackupsToProton();
+        const { errors } = await syncBackupsToProton();
         setActivity('Pruning old backups…');
-        await pruneProton();
+        const failures = errors + await pruneProton();
+        if (failures) {
+            console.error(`[orchestrator] Manual backup created, but syncing it had ${failures} error(s)`);
+            return;
+        }
         state.lastSync = new Date().toISOString();
         console.log('[orchestrator] Manual backup created and synced');
     } catch (err) {

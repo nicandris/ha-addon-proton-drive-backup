@@ -119,6 +119,22 @@ test('runSync records a real upload failure but keeps going', async () => {
     await o.runSync(true);
     assert.match(o.getStatus().lastError, /quota exceeded/);
     assert.equal(o.getStatus().errors.length, 1);
+    // P10: a sync whose uploads failed is not a successful sync.
+    assert.equal(o.getStatus().lastSync, null);
+});
+
+test('P10: lastSync is set only by a sync without errors', async () => {
+    const { o } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')] });
+    await o.runSync(true);
+    assert.equal(o.getStatus().lastError, null);
+    assert.ok(o.getStatus().lastSync, 'a clean sync records lastSync');
+});
+
+test('P10: createBackupNow does not record a sync whose upload failed', async () => {
+    const { o } = await load({ ha: [backup('s1', 'Automatic backup 1', '2026-07-01T00:00:00.000Z')], fail: { upload: new Error('quota exceeded') } });
+    await o.createBackupNow();
+    assert.equal(o.getStatus().lastSync, null);
+    assert.match(o.getStatus().lastError, /quota exceeded/);
 });
 
 test('runSync leaves no staged archive behind', async () => {
