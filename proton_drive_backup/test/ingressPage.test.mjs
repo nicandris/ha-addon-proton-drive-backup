@@ -135,3 +135,12 @@ test('the Proton session is excluded from Home Assistant backups (as the Supervi
     // Nothing else in /data is.
     assert.equal(excluded('/data/addons/data/a1b2c3d4_proton_drive_backup/options.json'), false);
 });
+
+test('translations/en.yaml names every option in the schema (and nothing else)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const cfg = await readFile(new URL('../config.yaml', import.meta.url), 'utf8');
+    const tr = await readFile(new URL('../translations/en.yaml', import.meta.url), 'utf8');
+    const schema = [...cfg.split(/^schema:\n/m)[1].matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]).sort();
+    const named = [...tr.matchAll(/^ {2}(\w+):/gm)].map((m) => m[1]).sort();
+    assert.deepEqual(named, schema);
+});

@@ -60,7 +60,7 @@ Set these on the app's **Configuration** tab, then **Save** and restart the app.
 | `keep_app_in_ha`        | `0`                      | Newest **app** backups to keep locally in Home Assistant. Used **only** by the manual **Clean up local backups** button. `0` = keep all app backups (no local clean-up of that bucket). |
 | `permanently_delete`    | `false`                  | When a backup is pruned or deleted from Proton Drive, also empty it out of the Drive **trash**. Trashed files still count against your storage quota until the trash is emptied. Off = backups go to the trash only, and can be restored from there. |
 | `automatic_name_prefix` | `Automatic backup`       | Backups whose name starts with this count as **automatic** for the keep-counts above; everything else counts as **app**. Change it only if your automatic backups are named differently. |
-| `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, if your Home Assistant backups are encrypted. Leave empty if they are not.                                 |
+| `backup_password`       | (empty)                  | Password used to **decrypt** your backups on **restore**, and to **encrypt** the backups the panel's **Create backup** makes. Use the same password as your Home Assistant backups; leave empty if they are not encrypted. |
 | `log_level`             | `info`                   | Logging verbosity: one of `trace`, `debug`, `info`, `notice`, `warning`, `error`, or `fatal`. Four levels exist internally, so `trace` behaves as `debug`, `notice` as `info` and `fatal` as `error`. Can also be changed at runtime from the Web UI (which offers the four internal levels).  |
 
 There is **no email / password / 2FA option** — authentication is handled by
@@ -121,9 +121,9 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
 - See **statistics** — how many backups are in Home Assistant vs mirrored in
   Proton Drive, split by bucket ("N automatic, M app") with total sizes, host
   disk free, and last-backup / next-sync times.
-- Edit **Settings** — drive folder, sync interval, the four keep-counts and the
-  automatic name prefix, saved with **Save settings** (the same options as the
-  Configuration tab). The backup password is only shown as set or not; change it
+- Edit **Settings** — drive folder, sync interval, the four keep-counts, the
+  automatic name prefix and `permanently_delete`, saved with **Save settings**
+  (the same options as the Configuration tab; a new interval applies at once). The backup password is only shown as set or not; change it
   in the Configuration tab. The status, statistics, and settings cards sit
   **side by side** on wide screens.
 - **Create backup** — make a new full Home Assistant backup now and upload it.
@@ -145,7 +145,7 @@ Click **Open Web UI** (the ingress panel, also available in the sidebar as
   from Proton Drive", then "Home Assistant is restoring…"), so a multi-GB restore
   never looks idle. A restore and a sync can never run at the same time.
 - **Delete** — remove a backup from Proton Drive (moves it to the Drive trash, or deletes it for good with `permanently_delete`).
-- Change the **log level** at runtime.
+- Change the **log level** — applied at once and saved as the `log_level` option.
 
 When a sync fails, or Proton Drive needs you to sign in again, the app also
 raises a **Home Assistant notification**, so you find out without opening the
@@ -170,11 +170,12 @@ app asks for access to the Home Assistant API.)
 - Backups are end-to-end encrypted client-side by Proton (via the `proton-drive`
   CLI) before upload, so Proton never sees their contents. If your Home Assistant
   backups are themselves encrypted, set `backup_password` so the app can decrypt
-  them when restoring.
+  them when restoring (it also encrypts the ones **Create backup** makes).
 - **The app never stores your Proton password** or two-factor secrets — sign-in
   happens entirely in Proton's browser login. This is a significant improvement
   over the app's previous design.
-- The Web UI is reachable only through Home Assistant ingress.
+- The Web UI is reachable only through Home Assistant ingress — the app refuses
+  requests from anything else on the internal add-on network.
 
 **What to be aware of:**
 

@@ -48,7 +48,8 @@ ha-addon-proton-drive-backup/        ← the app *repository* (added to HA)
     Dockerfile                       ← builds the image (downloads the CLI binary)
     run.sh                           ← bashio entrypoint: config -> env -> node
     package.json                     ← npm scripts only (start/test); no deps, no version
-    icon.png / logo.png              ← store art
+    icon.png                         ← store art (no logo.png: HA falls back to the icon)
+    translations/en.yaml             ← option names/descriptions for the Configuration tab
     README.md / DOCS.md / CHANGELOG.md
     src/                             ← source, run directly (no build step)
       main.mjs
@@ -56,11 +57,15 @@ ha-addon-proton-drive-backup/        ← the app *repository* (added to HA)
       orchestrator.mjs
       supervisor.mjs
       ingress.mjs
+      ui.html                        ← the Web UI page (HTML + inline script)
       logger.mjs
-    test/                            ← node:test unit tests
-      orchestrator.test.mjs
+    test/                            ← node:test tests
+      orchestrator.test.mjs          ← pure decision functions
+      orchestratorFlows.test.mjs     ← sync/prune/restore/scheduling flows (module mocks)
       protonCli.test.mjs
       supervisor.test.mjs            ← against a local node:http fixture server
+      ingressApi.test.mjs            ← the JSON API over real HTTP
+      ingressPage.test.mjs           ← the page's script parses; backup_exclude works
       logger.test.mjs                ← config.yaml <-> log-level contract
       fixtures/fake-proton-drive.mjs
 ```
@@ -87,13 +92,21 @@ subfolder whose name is the slug. That is why the repo name and the
   │  (auth'd UI)         │   │ logger.mjs (runtime log level)   │   │
   │                      └─────────────────────────────────────┘   │
   │                         persistent /data:                       │
-  │                           proton-drive-cli/  (CLI session)      │
+  │                           proton-drive-cli/  (CLI session —     │
+  │                             excluded from HA backups)           │
+  │                           backup-dates.json  (slug → HA date)   │
   │                         staging (temp .tar) — OUTSIDE /data:     │
   │                           $STAGING_DIR, else the container tmp   │
   └───────────────────────────────────────────────────────────────┘
 ```
 
-**Backup (sync) flow** (`orchestrator.runSync(force)`):
+**Scheduling** (`orchestrator.scheduleNextSync`): one chained `setTimeout` —
+`main` arms it for 5 s after boot, and every sync re-arms it
+`backup_interval_hours` after it *finished* (nothing when that is 0). The delay is
+clamped to setTimeout's 2^31−1 ms limit (the schema caps the option at 596 h),
+and a panel change of the interval re-arms it at once.
+
+**Backup (sync) flow** (`orchestrator.runSync()`, under the operation lock):
 1. `ensureSession()` — probe `cli.isConnected()` to confirm we're signed in
    (see §5). If not, set `needsLogin`, record a friendly `lastError`, and stop —
    the UI drives sign-in; sync never auto-logs-in.
@@ -102,7 +115,9 @@ subfolder whose name is the slug. That is why the repo name and the
    read as "empty"); dedup by the HA backup **slug** (parsed out of each Proton
    filename) **and by size** (`mirroredSlugs`, so a truncated remote copy is
    re-uploaded). Each item carries `sizeBytes`, and a `statfs` free-space check
-   precedes the download. For any HA backup whose slug isn't already in Proton,
+   precedes the download. Backups retention would prune straight away are
+   dropped first (`selectUploadsWithinRetention` — otherwise they were uploaded and
+   trashed again every sync). For any remaining HA backup not already in Proton,
    download it from the Supervisor to the **staging dir** (`tmpDir()` — see §6:
    `STAGING_DIR` or the container's tmp dir, deliberately **outside `/data`**)
    under its final `<name> (<slug>).tar`, upload it, then delete the temp file. A
@@ -111,29 +126,33 @@ subfolder whose name is the slug. That is why the repo name and the
 3. `pruneProton()` — trash mirrored backups beyond retention, enforced in **two
    independent buckets** (automatic vs app, classified by `isAutomaticBackup(name)`):
    `keep_automatic_in_proton` and `keep_app_in_proton`, oldest by date first
-   within each bucket (from the Proton entry's `date`). `selectProtonToPrune(entries,
-   keepAutomatic, keepApp)` is the pure decision fn; `keep<=0` for a bucket keeps
-   all of it, so an app-backup burst can never evict the automatic bucket.
+   within each bucket. Dates are the HA backup's (`withResolvedDates`: live HA
+   listing, else `/data/backup-dates.json`, only then the Proton upload time), and
+   copies that fail size verification don't count (`retentionEntries`).
+   `selectProtonToPrune(entries, keepAutomatic, keepApp)` is the pure decision fn;
+   `keep<=0` for a bucket keeps all of it, so an app-backup burst can never evict
+   the automatic bucket. A failed HA listing aborts the prune.
+4. `lastSync` is set only if steps 2–3 had **no** errors, and a Home Assistant
+   persistent notification is raised (failure / `needsLogin`) or dismissed
+   (`updateAlert`, via the Core API — `homeassistant_api: true`).
 
 There is **no HA-side pruning in the sync path.** Deleting local backups happens
 only via `pruneHALocalNow()` (the manual **Clean up local backups** button, §8),
 which never deletes a backup that isn't already mirrored in Proton — the safety
-invariant holds independently in each bucket (`selectHALocalToPrune(haBackups,
-protonSlugs, keepAutomatic, keepApp)`). `force` is
-accepted for API symmetry (the "Sync now" button passes `true`); since the app no
-longer creates backups there is no due-time gate to override.
+invariant holds independently in each bucket (`planHALocalPrune(haBackups,
+protonSlugs, keepAutomatic, keepApp).toDelete`).
 
 While a sync runs, `orchestrator` publishes a live `activity` string and
 `progress` `{index,total}` (via `setActivity`) that surface through
 `/api/status` and drive the Web UI's Syncing… badge and progress bar (§8).
 
 **Restore flow** (`orchestrator.restoreToHA(remoteName)`): validate the name
-(`isValidRemoteName` — path-traversal guard), take the **same `syncing` lock as a
-sync**, then download the archive from Proton into the staging dir (`tmpDir()`,
+(`isValidRemoteName` — path-traversal guard), take the **same operation lock as a
+sync**, remove any same-named leftover staging file, then download the archive from Proton into the staging dir (`tmpDir()`,
 outside `/data`), stream it to the Supervisor, and trigger a full restore —
 publishing `activity` at each step and clearing the lock in `finally`.
-`POST /api/restore` is **fire-and-forget**: it answers immediately and the UI
-follows progress/errors via `/api/status`.
+`POST /api/restore` is **fire-and-forget**: it answers immediately (409 if the
+lock is taken) and the UI follows progress/errors via `/api/status`.
 
 Backup archives are never streamed through a third party — they go
 Supervisor → this container → Proton (and back for restore), all in-process.
@@ -143,8 +162,7 @@ app derives identity from the name: the remote file is
 `<sanitizedName> (<slug>).tar`, where `slug` is the HA backup's stable, unique
 id. A name match alone is **not** proof of a good copy — `mirroredSlugs` also
 requires the remote size to match the HA backup's size (§6). Dedup parses that slug back out (`slugFromRemoteName`); retention sorts by
-each Proton entry's `date` (from `modificationTime`/`creationTime`), since the
-names are no longer timestamp-sortable.
+the HA backup's date (see step 3), since the names aren't timestamp-sortable.
 
 ---
 
@@ -152,12 +170,12 @@ names are no longer timestamp-sortable.
 
 | File | Responsibility |
 | --- | --- |
-| `main.mjs` | Boot: import `logger.mjs` first (patches `console`), read config **only** via `orchestrator.getRuntimeConfig()` (single source; never carries the backup password), `cleanStagingDir()` to reclaim archives left by a stop mid-transfer, start ingress, run an initial sync ~5s after start, schedule recurring syncs if `BACKUP_INTERVAL_HOURS > 0`, handle SIGTERM/SIGINT. No crypto/login setup — the CLI owns auth. The legacy `/data/tmp` mkdir was removed in 0.4.1; staging is `orchestrator.tmpDir()`, **outside `/data`** (§6). |
+| `main.mjs` | Boot: import `logger.mjs` first (patches `console`), read config **only** via `orchestrator.getRuntimeConfig()` (single source; never carries the backup password), `cleanStagingDir()` to reclaim archives left by a stop mid-transfer, start ingress, arm the scheduler (`scheduleNextSync(5000)`), handle SIGTERM/SIGINT. No crypto/login setup — the CLI owns auth. The legacy `/data/tmp` mkdir was removed in 0.4.1; staging is `orchestrator.tmpDir()`, **outside `/data`** (§6). |
 | `protonCli.mjs` | Thin wrapper around the `proton-drive` binary. See §5. |
-| `orchestrator.mjs` | `runSync(force)`, `restoreToHA`, `deleteProtonBackup`, `listProtonBackups`, `pruneHALocalNow` (manual HA clean-up), `ensureSession`, `getStatus`/`setActivity` live-status state, and the **pure decision functions** (§6). Resilient: per-backup errors are caught into `state.lastError`; `runSync` never throws out. A `syncing` guard prevents overlapping syncs; staging is outside `/data`; a download `404` is skipped (`isNotFoundError`). `describeError` surfaces `err.cause`. |
+| `orchestrator.mjs` | `runSync`, `createBackupNow`, `restoreToHA`, `deleteProtonBackup`, `listProtonBackups`, `pruneHALocalNow` (manual HA clean-up), `scheduleNextSync`, `applySettings`, `ensureSession`, `getStatus`/`setActivity` live-status state, and the **pure decision functions** (§6). Resilient: per-backup errors are caught into `state.lastError`; `runSync` never throws out. Every operation runs under one lock (`exclusively`); staging is outside `/data`; a download `404` is skipped (`isNotFoundError`). `describeError` surfaces `err.cause`. |
 | `supervisor.mjs` | HA Supervisor backup API client (`http://supervisor`, `SUPERVISOR_TOKEN`). §7. |
-| `ingress.mjs` | `node:http` server: self-contained HTML UI + JSON API. §8. |
-| `logger.mjs` | Patches `console.{log,debug,warn,error}` once on import to add ISO timestamps and level filtering (`error`/`warning`/`info`/`debug`). HA's extra `config.yaml` levels are aliased (`trace`→debug, `notice`→info, `fatal`→error). **`setLogLevel` never throws** (unknown → warning + `info`) since it runs at boot; `setLogLevelStrict` throws and is used only by `POST /api/log-level` (→ 400). `logLevels()` feeds the UI dropdown; `test/logger.test.mjs` asserts the `config.yaml` contract. |
+| `ingress.mjs` | `node:http` server: serves `ui.html` + the JSON API, to HA's ingress proxy only. §8. |
+| `logger.mjs` | Patches `console.{log,debug,warn,error}` once on import to add ISO timestamps and level filtering (`error`/`warning`/`info`/`debug`). HA's extra `config.yaml` levels are aliased (`trace`→debug, `notice`→info, `fatal`→error). **`setLogLevel` never throws** (unknown → warning + `info`) since it runs at boot; `setLogLevelStrict` throws and is used only by `POST /api/log-level` (→ 400; that route also saves the level as the `log_level` option). `logLevels()` feeds the UI dropdown; `test/logger.test.mjs` asserts the `config.yaml` contract. |
 
 ---
 
@@ -182,8 +200,9 @@ which Proton retention sorts by.)
 - Spawns the CLI and **never rejects on a nonzero exit** — it resolves
   `{code, stdout, stderr}` so callers decide what an error means. (It *does*
   reject on a spawn `error` — a missing/non-executable binary is a real failure.)
-- `timeoutMs` defaults to 120 s; `<= 0` disables the timer (used for large
-  uploads/downloads). On timeout the child is `SIGKILL`ed and the result is
+- `timeoutMs` defaults to 120 s; `<= 0` disables the timer. Uploads/downloads
+  pass `TRANSFER_TIMEOUT_MS` (12 h) — finite, so a hung transfer can't hold the
+  lock forever. On timeout the child is `SIGKILL`ed and the result is
   `code: 124` with a timeout note appended to stderr.
 
 ### Failure detection is by EXIT CODE + stderr, never JSON
@@ -198,7 +217,7 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
   sign-in URL and blocks until the user completes sign-in in a browser (any
   device). `onUrl` fires once, with the URL scraped from stdout/stderr via
   `/https:\/\/account\.proton\.me\/\S+/`. Resolves `{ok:true}` on exit 0, else
-  `{ok:false, error}`. Default timeout 300 s.
+  `{ok:false, error}` with the sign-in URL redacted. Default timeout 300 s.
 - `logout()` — `auth logout` (drops the persisted session).
 - `ensureFolder(remotePath)` — creates each missing segment under `/my-files`
   with `filesystem create-folder`, treating an "already exists"/conflict as
@@ -211,9 +230,10 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
   `creationTime`, plain ISO strings). **The CLI's `list -j` schema (the sharp
   edge — fixed in 0.2.4):**
   - The top level is a **bare JSON array** of `NodeEntity` objects (there is no
-    wrapping object). The parser still tolerates a wrapping object with a nested
-    array under `items`/`entries`/`data`/`children` (or the first array value
-    found), for resilience across CLI releases.
+    wrapping object). The **lenient** parser still tolerates a wrapping object
+    with a nested array under `items`/`entries`/`data`/`children` (or the first
+    array value found) and bare strings; **strict** mode accepts only the bare
+    array of objects (0.5.0) — a guessed shape could read as a false-empty folder.
   - Each entry's **`name` is a `Result` object** — `{ ok: true, value: "<file>.tar" }`
     — **not a plain string.** The parser reads `name.value` (and still tolerates
     a bare string or a capitalised `Name`/`fileName`). Missing this was the root
@@ -228,7 +248,7 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
     exit / parse failure / unrecognisable shape — display only. **`listStrict(path)`
     (or `list(path,{strict:true})`) throws instead, and the sync + retention paths
     must use it**: treating a failed listing as an empty folder made
-    `selectToUpload` re-upload every backup with `-c replace` (tens of GB) *and*
+    `selectToUpload` re-upload every backup with `-f replace` (tens of GB) *and*
     reset every Proton `modificationTime`, which retention sorts by. Nameless
     entries are still dropped. Only the mapped fields (count + names/sizes) are
     logged — never Proton's raw `NodeEntity` payload, which carries node/revision
@@ -241,6 +261,10 @@ The CLI signals errors via **exit code (1) + plain-text stderr even with
 - `downloadPath(remotePath, localFolder)` — `filesystem download` into a folder
   (keeps the remote filename), killed after `TRANSFER_TIMEOUT_MS`; throws on failure.
 - `trash(remotePath)` — `filesystem trash`; throws on failure.
+- `trashedUids(name)` / `deleteFromTrash(name, {keep})` — the trash is flat, so
+  same-named nodes are addressed by UID. `removeRemote` records the UIDs already
+  trashed under that name, trashes, then purges all **but** those — only the node
+  it just trashed (`permanently_delete`).
 
 ### Authentication — owned entirely by the CLI
 There is **no** login/2FA/session/crypto code in this app any more. Sign-in is:
@@ -263,12 +287,11 @@ reports `needsLogin` and the UI drives `auth login`.
 
 - `runSync` wraps everything in try/catch and **never throws out** (so it can't
   crash the scheduler/UI); failures go to `state.lastError` via `describeError`.
-- **Overlap guard.** `runSync` is triggered from several places (startup, the
-  scheduler, post-login, and "Sync now"). A module-level `syncing` flag makes a
-  second concurrent trigger skip — overlapping runs race on retention and
-  re-upload the same backup. `createBackupNow` and (since 0.4.1) `restoreToHA` take
-  the same flag, so a restore can't stage into the tmp dir a sync is using, and the
-  UI no longer shows "Idle" through a multi-GB restore.
+- **One operation lock.** `exclusively(fn)` holds the module-level `syncing`
+  flag for `runSync`, `createBackupNow`, `restoreToHA`, `deleteProtonBackup` and
+  `pruneHALocalNow` — overlapping runs race on retention, re-upload the same
+  backup or stage into the same tmp dir. A taken lock throws an error with
+  `busy: true` (the routes answer 409); `runSync`/`createBackupNow` just skip.
 - **Staging outside `/data`.** `tmpDir()` returns `process.env.STAGING_DIR` or
   `join(os.tmpdir(), 'proton-drive-backup')` — deliberately **not** under
   `/data`. HA full-backups include the add-on's `/data` volume, so a temp `.tar`
@@ -292,8 +315,8 @@ reports `needsLogin` and the UI drives `auth login`.
 - **Live status.** `setActivity(activity, progress?)` updates `state.activity`
   (a human step like `Uploading 2 of 3: <name>`) and `state.progress`
   (`{index,total}`); `getStatus()` returns those plus `syncing`, `lastSync`,
-  `lastError`, `nextSyncEpoch`, `needsLogin`. `runSync` clears them (`null`) in
-  its `finally`. The UI (§8) renders them.
+  `lastError`, `nextSyncEpoch`, `needsLogin`. `exclusively` clears them (`null`)
+  in its `finally`. The UI (§8) renders them.
 - **Pure decision functions** (no I/O, unit-tested in
   `test/orchestrator.test.mjs`):
   - `mirroredSlugs(haBackups, remoteEntries, {tolerance})` — the slugs that are
@@ -316,19 +339,25 @@ reports `needsLogin` and the UI drives `auth login`.
     `body.name` is interpolated into a Drive path *and* a local staging path — a
     `../../` payload escaped both, and the restore `finally` `rm()` ran even on
     failure (arbitrary in-container file deletion).
-  - `isAutomaticBackup(name)` — `/^Automatic backup/i.test(name)`; splits backups
+  - `isAutomaticBackup(name)` — case-insensitive "starts with
+    `automatic_name_prefix`" (default `Automatic backup`); splits backups
     into the **automatic** bucket (HA's scheduled full backups) vs the **app**
     bucket (per-add-on backups, manual snapshots). Works on both an HA backup
     `name` and a Proton remote filename (the trailing ` (slug).tar` can't affect a
     `^`-anchored match; `sanitizeName` preserves the leading text).
-  - `selectProtonToPrune(entries, keepAutomatic, keepApp)` — partitions the `.tar`
-    entries into the two buckets by `isAutomaticBackup`; within each, sorts by the
-    Proton entry's `date` (newest kept) and returns everything beyond that bucket's
-    keep. `keep <= 0` for a bucket = keep all of it, so an app-backup burst can
-    never evict the automatic bucket.
-  - `selectHALocalToPrune(haBackups, protonSlugs, keepAutomatic, keepApp)` — same
+  - `selectProtonToPrune(entries, keepAutomatic, keepApp)` — partitions our
+    `(slug).tar` entries into the two buckets by `isAutomaticBackup`; within each,
+    sorts by `date` (newest kept) and returns everything beyond that bucket's keep.
+    `keep <= 0` for a bucket = keep all of it, so an app-backup burst can never
+    evict the automatic bucket. Undated entries are never pruned and take **no**
+    keep slot (they used to, which trashed the just-uploaded backup).
+  - `withResolvedDates(entries, haBackups, knownDates)` / `retentionEntries` /
+    `selectUploadsWithinRetention` — the date resolution, the "unverified copies
+    don't count" filter, and the "don't upload what would be pruned" filter (§3).
+  - `planHALocalPrune(haBackups, protonSlugs, keepAutomatic, keepApp)` — same
     two-bucket partition; per bucket, HA backups beyond the newest `keep`, oldest
-    first by `date`, **filtered to slugs confirmed present in `protonSlugs`**.
+    first by `date` (an unparseable date sorts as newest), **`toDelete` filtered
+    to slugs confirmed present in `protonSlugs`**.
     `keep <= 0` for a bucket = delete nothing there. **SAFETY: it can never return
     a slug that isn't in `protonSlugs`, in either bucket** — an un-mirrored backup
     is never selected for deletion, no matter its age. Accepts a `Set` or array.
@@ -340,11 +369,12 @@ reports `needsLogin` and the UI drives `auth login`.
     the **only** config reader `main.mjs` uses (the duplicated `readConfig` there was
     removed in 0.4.1). Because it omits the password value, `main` can safely dump
     the whole object at debug level.
-  - Helpers `isOurRemoteFile` (now just `name.endsWith('.tar')`) / `sanitizeName`
+  - Helpers `isOurRemoteFile` (a `(slug).tar` name — the user's other `.tar`
+    files in the folder are not ours) / `sanitizeName`
     / `remoteNameFor` / `slugFromRemoteName` are type-guarded (a non-string
     `name` must not crash — regression covered by tests).
-- `pruneHALocalNow()` wraps `selectHALocalToPrune` with I/O: it lists both sides,
-  deletes the selected slugs, and returns `{deleted, skippedNotInProton}` (the
+- `pruneHALocalNow()` wraps `planHALocalPrune` with I/O (under the lock): it lists
+  both sides, deletes the selected slugs, and returns `{deleted, failed, skippedNotInProton}` (the
   skipped count = per-bucket candidates beyond `keep` that aren't yet in Proton).
   It is **manual only** (the "Clean up local backups" button) and never runs in a
   sync.
@@ -357,7 +387,9 @@ reports `needsLogin` and the UI drives `auth login`.
 
 Base `http://supervisor`, bearer `SUPERVISOR_TOKEN`. Every response is
 `{result:'ok'|'error', data, message}` — we check `result` and unwrap `data`.
-Granted `hassio_api: true` + `hassio_role: manager` in `config.yaml`.
+Granted `hassio_api: true` + `hassio_role: backup` in `config.yaml` (enough for
+every call below — see "Deliberate decisions"), plus `homeassistant_api: true`
+for the two Core service calls.
 
 Base URL is `$SUPERVISOR_URL` if set (the tests point it at a local fixture
 server), else `http://supervisor`. `unwrapEnvelope` is the single place that
@@ -377,6 +409,12 @@ decides what "failed" means, shared by both transports.
 - `restoreBackup(slug, password)` → `POST /backups/{slug}/restore/full` with
   `background:false` — **over `node:http`**.
 - `deleteBackup(slug)` → `DELETE /backups/{slug}`.
+- `selfInfo()` / `setSelfOptions(changes)` → `GET /addons/self/info`, then
+  `POST /addons/self/options` with the change merged over the current options
+  (the Supervisor replaces them wholesale). Always `self`, never the slug.
+- `notify(id, title, message)` / `dismissNotification(id)` →
+  `POST /core/api/services/persistent_notification/{create,dismiss}` (Core's own
+  JSON, not the envelope — only the HTTP status counts).
 
 **Why `node:http` for the two long calls.** Node's global `fetch` (undici) applies
 a ~300 s **headers** timeout that can't be raised per request, and a
@@ -392,8 +430,12 @@ Supervisor that never answers must not hold the sync lock forever. Short calls k
 
 ## 8. Ingress web UI (`ingress.mjs`)
 
-Unauthenticated `node:http` server (HA ingress provides auth). Serves one
-self-contained HTML page plus JSON endpoints. Endpoints:
+`node:http` server with no auth of its own: HA ingress authenticates the user,
+and the server answers **only** HA's ingress proxy (`172.30.32.2`, plus
+loopback) — every other container on the hassio network gets 403
+(`isAllowedClient`, 0.5.0). Request bodies are capped at 64 KiB (413). Serves
+`src/ui.html` (read once; the dark palette is spliced in at its two
+`/* DARK_PALETTE */` markers) plus JSON endpoints:
 
 - `GET /` — the page.
 - `GET /api/status` — connection state (via `cli.isConnected()`), a `status`
@@ -406,21 +448,29 @@ self-contained HTML page plus JSON endpoints. Endpoints:
   surfaces via `/api/status` (`loginUrl`) as soon as the CLI prints it; on
   success the state flips to connected and a post-login `runSync` kicks off.
 - `POST /api/disconnect` — `cli.logout()` and clear the UI login state.
-- `POST /api/sync-now` — fire `orchestrator.runSync(true)` (doesn't block on
+- `POST /api/sync-now` — fire `orchestrator.runSync()` (doesn't block on
   completion). Uploads existing HA backups not yet in Proton.
 - `POST /api/prune-ha` — `await orchestrator.pruneHALocalNow()`; returns
-  `{ok, deleted, skippedNotInProton}` (awaited so the UI can report the result).
+  `{ok, deleted, failed, skippedNotInProton}` (awaited so the UI can report the
+  result); 409 while another operation runs.
 - `POST /api/restore` — validates `body.name` (`isValidRemoteName` → 400) then
   fires `orchestrator.restoreToHA(name)` **fire-and-forget** (a restore blocks for
-  minutes; progress/errors surface via `/api/status`, like `/api/sync-now`).
+  minutes; progress/errors surface via `/api/status`, like `/api/sync-now`); 409
+  while another operation runs.
 - `POST /api/delete` — same name validation, then
-  `orchestrator.deleteProtonBackup(name)` (awaited).
-- `GET`/`POST /api/log-level` — read/set the runtime log level; `POST` uses
-  `setLogLevelStrict` so garbage is a 400 (boot stays non-throwing).
+  `orchestrator.deleteProtonBackup(name)` (awaited; 409 while busy).
+- `POST /api/settings` — `orchestrator.applySettings` (validated patch, saved via
+  `setSelfOptions`, applied to `process.env`, scheduler re-armed if the interval
+  changed).
+- `POST /api/log-level` — set the runtime log level with `setLogLevelStrict`
+  (garbage is a 400; boot stays non-throwing) and save it as the `log_level`
+  option (best-effort, `persisted` in the reply).
+- `POST /api/clear-error` — clear `lastError`/`errors` and the login error.
 
 `/api/status` also carries `settings` (`orchestrator.getConfig()` — the effective
 config with the password exposed only as the boolean `backupPasswordSet`) so the UI
-can render the read-only **Settings** card and disable **Clean up local backups**
+can render the editable **Settings** card (folder, interval, the four keep-counts,
+prefix, `permanently_delete`) and disable **Clean up local backups**
 (and word the confirm) when **both** `keepAutomaticInHA` and `keepAppInHA` are 0.
 It also carries `stats` (mirror model: `haCount`/`haSizeBytes` = all HA backups;
 `protonCount`/`protonSizeBytes` = mirrored; plus per-bucket
@@ -464,9 +514,12 @@ the app has **no runtime npm dependencies** (`package.json` declares only the
 `start`/`test` scripts and `type: module`).
 
 - `npm start` → `node src/main.mjs`.
-- `npm test` → `node --test` (Node's built-in test runner).
+- `npm test` → `node --experimental-test-module-mocks --test` (Node's built-in
+  test runner; the flag is for `orchestratorFlows.test.mjs`).
 
-Tests exercise the **real** code paths, not mocks:
+Tests exercise the **real** code paths; only `orchestratorFlows.test.mjs` swaps
+`supervisor.mjs`/`protonCli.mjs` for in-memory doubles (`mock.module`) to drive
+the sync/prune/restore/lock/scheduling flows (with `mock.timers`):
 - `test/orchestrator.test.mjs` — the pure decision/identity functions (§6), the
   highest-risk part of the filename-based design: dedup, both retention buckets, the
   never-delete-an-un-mirrored-backup invariant, the size-verification helpers
@@ -486,6 +539,11 @@ Tests exercise the **real** code paths, not mocks:
   driven by `FAKE_*` env vars) so the real spawn/parse code runs: nonzero-exit
   handling, timeout → 124, `isConnected`, `login` URL capture, the defensive
   `list` JSON parsing, and upload/download/trash throw-on-failure.
+- `test/ingressApi.test.mjs` — the server on port 0 over real HTTP: routes,
+  validation, the caller check, the body cap. `test/ingressPage.test.mjs` — the
+  page's script compiles (`vm.Script`), the palette rules, and that
+  `backup_exclude` really matches the Supervisor's path (a `PurePath.match`
+  port).
 
 Manual smoke test (no real Proton calls — `isConnected()` fails fast, sync skips):
 
@@ -502,13 +560,14 @@ PORT=8123 DATA_DIR=/tmp/x BACKUP_INTERVAL_HOURS=0 LOG_LEVEL=debug node src/main.
 → code reads `process.env`. To add an option you touch **four** places:
 `config.yaml` (both `options` and `schema`), `run.sh` (export, guarding optional
 values with `bashio::config.has_value` to avoid the literal string `null`), and
-the reader (`main.mjs` / `orchestrator.mjs`). `ingress_port: 8099` in
-`config.yaml` must equal `export PORT=8099` in `run.sh`.
+the reader (`main.mjs` / `orchestrator.mjs`) — plus `translations/en.yaml`, and
+`EDITABLE_SETTINGS` if the panel may change it. HA's default ingress port (8099;
+`config.yaml` sets no `ingress_port`) must equal `export PORT=8099` in `run.sh`.
 
 Env vars: `DRIVE_FOLDER`, `BACKUP_INTERVAL_HOURS`, `KEEP_AUTOMATIC_IN_PROTON`,
 `KEEP_APP_IN_PROTON`, `KEEP_AUTOMATIC_IN_HA`, `KEEP_APP_IN_HA`,
-`BACKUP_PASSWORD`, `LOG_LEVEL`, plus `PORT`,
-`DATA_DIR`, `SUPERVISOR_TOKEN` (HA-provided), `SUPERVISOR_URL` (test override), and the CLI's
+`PERMANENTLY_DELETE`, `AUTOMATIC_NAME_PREFIX`, `BACKUP_PASSWORD`, `LOG_LEVEL`, plus `PORT`,
+`DATA_DIR` (where `backup-dates.json` lives), `SUPERVISOR_TOKEN` (HA-provided), `SUPERVISOR_URL` (test override), and the CLI's
 `PROTON_DRIVE_CREDENTIALS_STORE` / `XDG_DATA_HOME` / `PROTON_DRIVE_BIN`
 (set in `run.sh`). `STAGING_DIR` is an **optional** override (not a `config.yaml`
 option and not exported by `run.sh`) read directly by `orchestrator.tmpDir()` —
@@ -561,10 +620,13 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
 - **A failed listing must never read as "empty".** Use `listStrict` anywhere the
   result drives uploads or deletions; only display code may use lenient `list`.
 - **Size-verify before trusting a remote copy.** `mirroredSlugs` is the only
-  legitimate source for `selectHALocalToPrune`'s `protonSlugs`; a filename-only set
+  legitimate source for `planHALocalPrune`'s `protonSlugs`; a filename-only set
   reopens the data-loss path (§6).
 - **The long Supervisor calls must not go through `fetch`** — undici's ~300 s
   headers timeout breaks multi-GB `background:false` backup/restore calls (§7).
+- **`backup_exclude` is matched against the Supervisor's path**
+  (`/data/addons/data/<slug>/…`) with `PurePath.match`, so its patterns must be
+  relative. The 0.4.9 `/data/proton-drive-cli/*` never matched (fixed 0.5.0).
 - **Escape all server-provided text in the ingress page** (`esc()`, §8).
 - **Staging must stay outside `/data`.** HA full-backups include the add-on's
   `/data`; staging temp `.tar` files there let a backup swallow them. `tmpDir()`
@@ -579,7 +641,7 @@ Push is over HTTPS to `github.com/nicandris/ha-addon-proton-drive-backup`.
   `BACKUP_INTERVAL_HOURS` is just how often to *check* for new ones to upload.
 - **HA-local deletion is manual and safety-gated.** Only `pruneHALocalNow` (the
   "Clean up local backups" button) deletes local backups, and only ones already
-  in Proton — `selectHALocalToPrune` can never return an un-mirrored slug. Don't
+  in Proton — `planHALocalPrune` can never return an un-mirrored slug. Don't
   wire it into the automatic sync path.
 - **Line endings must be LF** (`run.sh` shebang); enforced by `.gitattributes`.
 - **Session token at rest.** The CLI session lives in `/data`

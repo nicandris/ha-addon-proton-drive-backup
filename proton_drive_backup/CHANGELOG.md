@@ -25,6 +25,10 @@
   session that needs signing in again, now raises a notification in Home
   Assistant; the next successful sync clears it. This needs the
   `homeassistant_api` permission, which the add-on now requests.
+- **More settings in the panel.** `permanently_delete` can be switched there, and
+  the log level you pick in the panel is now saved instead of resetting on the
+  next restart.
+- **Option descriptions on the Configuration tab** (`translations/en.yaml`).
 
 ### Fixed
 
@@ -71,6 +75,12 @@
   as `1`.
 - **Restore always uses the freshly downloaded archive,** never a leftover file
   with the same name.
+
+### Documentation
+
+- `backup_password` is also used to encrypt the backups **Create backup**
+  makes; the docs now say so. The developer guide is up to date again.
+
 
 ## 0.4.15
 
