@@ -226,7 +226,20 @@ test('listStrict() THROWS on unparseable output and on a non-array shape', async
     await assert.rejects(() => cli.listStrict('/my-files/x'), /JSON parse failed/);
     clearFake();
     process.env.FAKE_LIST_JSON = JSON.stringify({ meta: 1, nested: { a: 2 } }); // no array anywhere
-    await assert.rejects(() => cli.listStrict('/my-files/x'), /no recognisable array/);
+    await assert.rejects(() => cli.listStrict('/my-files/x'), /unexpected schema/);
+});
+
+test('P20: listStrict() refuses the loose shapes the lenient list() tolerates', async () => {
+    for (const json of [
+        { items: [{ name: 'a (s1).tar' }] },            // wrapped array
+        { errors: [], nodes: [{ name: 'a (s1).tar' }] }, // "first array" would be errors: []
+        ['a (s1).tar'],                                   // bare strings
+    ]) {
+        clearFake();
+        process.env.FAKE_LIST_JSON = JSON.stringify(json);
+        await assert.rejects(() => cli.listStrict('/my-files/x'), /unexpected schema/, JSON.stringify(json));
+        assert.ok(Array.isArray(await cli.list('/my-files/x')), 'lenient list still tolerates it');
+    }
 });
 
 test('listStrict() returns the parsed entries on success (incl. a genuinely empty folder)', async () => {

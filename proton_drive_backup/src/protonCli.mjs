@@ -348,8 +348,11 @@ function sizeOf(entry) {
  *    made the orchestrator re-upload every backup with `-c replace` (tens of GB)
  *    and reset every Proton `modificationTime`, destroying retention ordering.
  *
- * The shape below is the CLI's real `filesystem list -j` schema (locked in
- * 0.2.4); the extra tolerance is kept because the CLI is early.
+ * The CLI's real `filesystem list -j` schema (locked in 0.2.4) is a bare array
+ * of node objects. LENIENT mode also tolerates other shapes because the CLI is
+ * early; STRICT mode does not — guessing "the first array in some object" could
+ * pick an unrelated (e.g. empty `errors`) array, i.e. exactly the false-empty
+ * listing strict mode exists to refuse.
  *
  * @param {string} remotePath
  * @param {{strict?:boolean}} [opts]
@@ -371,10 +374,15 @@ export async function list(remotePath, { strict = false } = {}) {
     } catch (err) {
         return fail(`JSON parse failed (${err.message})`);
     }
-    // Tolerate: [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
+    // Tolerate (lenient only): [ ... ] OR { items:[...] } / { entries:[...] } / { data:[...] } / { children:[...] }.
     let arr = null;
     if (Array.isArray(parsed)) {
         arr = parsed;
+        if (strict && arr.some((e) => !e || typeof e !== 'object' || Array.isArray(e))) {
+            return fail('JSON array holds non-object entries (unexpected schema)');
+        }
+    } else if (strict) {
+        return fail('JSON was not the expected bare array of nodes (unexpected schema)');
     } else if (parsed && typeof parsed === 'object') {
         arr = parsed.items || parsed.entries || parsed.data || parsed.children ||
             Object.values(parsed).find((v) => Array.isArray(v)) || null;
