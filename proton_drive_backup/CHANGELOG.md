@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.1
+
+### Security
+
+- **Node.js 24.22.1.** Fixes the October 21 Node.js security release (a Brotli
+  decoder out-of-bounds write reachable from `fetch()`, two TLS hostname-check
+  bypasses, and more). Alpine's own Node package was still on 24.18.1, so the
+  add-on now takes Node from the official image.
+- **Updated CA certificates**, dropping the compromised eMudhra roots.
+
 ## 0.5.0
 
 ### Security

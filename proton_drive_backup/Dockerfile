@@ -1,10 +1,16 @@
+# Node comes from the official image, not Alpine's `nodejs` package: Alpine 3.24
+# was still on 24.18.1 after the 2026-10-21 Node security release (24.22.1).
+# Same Alpine release as the base, so the musl binary matches. The test suite is
+# verified on Node 24. Dependabot bumps tag and digest together.
+FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS node
+
 # Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
 # change what we build on; Dependabot bumps tag and digest together.
 FROM ghcr.io/home-assistant/base:3.24@sha256:8fde4170393bdf7a121ea4d6e34b417e1d0b90125948459f9f9f70cdf5d77c16
-# Pin the Node MAJOR explicitly: Alpine 3.23+ ships Node 24, and an unpinned
-# `apk add nodejs` would silently follow the base image to a new major.
-# The test suite is verified on Node 24.
-RUN apk add --no-cache 'nodejs~=24'
+# The node binary links libstdc++/libgcc; the upgrade picks up the patched
+# ca-certificates (eMudhra roots) the pinned base predates.
+RUN apk add --no-cache libstdc++ libgcc && apk upgrade --no-cache ca-certificates ca-certificates-bundle
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
 # HA provides BUILD_ARCH (amd64 | aarch64 | armv7 | ...). Only amd64/aarch64 have
 # a musl proton-drive build, so anything else fails the build explicitly.
