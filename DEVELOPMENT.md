@@ -598,9 +598,11 @@ means HA won't show an update — the user must uninstall/reinstall or use
 ### Deploy
 `Dockerfile`: `FROM ghcr.io/home-assistant/base:3.24@sha256:…` (pinned by digest; explicit — the
 `BUILD_FROM` arg is no longer auto-provided by recent Supervisor versions),
-`apk add --no-cache 'nodejs~=24'` (**pin the Node major** — Alpine 3.23+ ships Node
-24 and an unpinned `nodejs` would follow the base image to a new major; the suite is
-verified on Node 24), then **download the pinned `proton-drive` binary** for the
+the `node` binary copied from the official `node:24.x-alpine3.24` image (pinned by
+digest; since 0.5.1 — Alpine's `nodejs` package lagged the 2026-10-21 Node security
+release; keep the image's Alpine release equal to the base's so the musl binary
+matches, and keep the major at 24, which the suite is verified on) plus the
+`libstdc++`/`libgcc` it links, then **download the pinned `proton-drive` binary** for the
 `BUILD_ARCH` (`amd64` → `linux-x64-musl`, `aarch64` → `linux-arm64-musl`) and
 verify it with `sha512sum -c` against **Proton's published** SHA-512 from
 `https://proton.me/download/drive/cli/version.json` (any other arch fails the
