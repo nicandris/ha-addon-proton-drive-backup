@@ -2,7 +2,7 @@
 # was still on 24.18.1 after the 2026-10-21 Node security release (24.22.1).
 # Same Alpine release as the base, so the musl binary matches. The test suite is
 # verified on Node 24. Dependabot bumps tag and digest together.
-FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS node
+FROM node:26.12.0-alpine3.24@sha256:6f08a523443ddedf52941874c203475b0ad503e859ad70cb26ab8be9a517dbd5 AS node
 
 # Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
 # change what we build on; Dependabot bumps tag and digest together.
