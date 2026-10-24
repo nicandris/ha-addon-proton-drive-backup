@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1.1
+
+### Changed
+
+- **Home Assistant base image** updated to the latest 3.24 build.
+
 ## 0.5.1
 
 ### Security
