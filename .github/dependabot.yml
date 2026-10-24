@@ -4,6 +4,10 @@ updates:
     directory: "/proton_drive_backup"
     schedule:
       interval: "weekly"
+    # LTS only: Dependabot can't tell Current from LTS, so node majors are bumped by hand.
+    ignore:
+      - dependency-name: "node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
   - package-ecosystem: "github-actions"
     directory: "/"
