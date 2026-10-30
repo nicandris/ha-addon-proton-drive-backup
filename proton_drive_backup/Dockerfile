@@ -2,11 +2,11 @@
 # was still on 24.18.1 after the 2026-10-21 Node security release (24.22.1).
 # Same Alpine release as the base, so the musl binary matches. The test suite is
 # verified on Node 24. Dependabot bumps tag and digest together.
-FROM node:24.22.1-alpine3.24@sha256:06d7adf3e0ef61a13f1d28682726366f97a15aa1888c934d3ecec86c33918b53 AS node
+FROM node:24.22.2-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS node
 
 # Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
 # change what we build on; Dependabot bumps tag and digest together.
-FROM ghcr.io/home-assistant/base:3.24@sha256:992dc6a5727b97a30da8dd259b489739299c324407557df540165e2f0dbb7763
+FROM ghcr.io/home-assistant/base:3.24@sha256:880016115f356afc814398e17ba68a7ee66dfc1b4eaef09755ea2c9fa18ea481
 # The node binary links libstdc++/libgcc; the upgrade picks up the patched
 # ca-certificates (eMudhra roots) the pinned base predates.
 RUN apk add --no-cache libstdc++ libgcc && apk upgrade --no-cache ca-certificates ca-certificates-bundle

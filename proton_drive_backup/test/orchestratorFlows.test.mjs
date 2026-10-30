@@ -366,7 +366,10 @@ test('P9: pruneProton refuses to prune when the HA listing fails', async () => {
 const HOUR = 3600 * 1000;
 /** Let the runSync started by a fired timer finish (it does real fs I/O). */
 async function settle(o) {
-    for (let i = 0; i < 200 && o.getStatus().syncing; i++) await new Promise((r) => setImmediate(r));
+    // Real-clock deadline, not an iteration cap: Date is mocked, and a slow CI runner
+    // needed more than 200 turns to finish a sync (P6/P7 failed on 2026-10-26).
+    const deadline = performance.now() + 5000;
+    while (o.getStatus().syncing && performance.now() < deadline) await new Promise((r) => setImmediate(r));
     for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
 }
 
