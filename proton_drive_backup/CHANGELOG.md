@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.1.2
+
+### Changed
+
+- **Node.js 24.22.2** and the latest Home Assistant 3.24 base image.
+
 ## 0.5.1.1
 
 ### Changed
