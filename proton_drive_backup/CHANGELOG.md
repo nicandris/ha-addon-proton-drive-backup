@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2.1
+
+### Changed
+
+- **Node.js 26.13.1** (the new LTS line) and the latest Home Assistant 3.24 base image.
+
 ## 0.5.2
 
 ### Security
