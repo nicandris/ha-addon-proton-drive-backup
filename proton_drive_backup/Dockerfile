@@ -1,15 +1,15 @@
 # Node comes from the official image, not Alpine's `nodejs` package: Alpine 3.24
 # was still on 24.18.1 after the 2026-10-21 Node security release (24.22.1).
 # Same Alpine release as the base, so the musl binary matches. The test suite is
-# verified on Node 24. Dependabot bumps tag and digest together.
-FROM node:24.22.2-alpine3.24@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f4077d765542f85 AS node
+# verified on Node 26 (LTS). Dependabot bumps tag and digest together.
+FROM node:26.13.1-alpine3.24@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS node
 
 # Pinned by digest (the multi-arch index for 3.24) so a re-pushed tag can't
 # change what we build on; Dependabot bumps tag and digest together.
-FROM ghcr.io/home-assistant/base:3.24@sha256:880016115f356afc814398e17ba68a7ee66dfc1b4eaef09755ea2c9fa18ea481
-# The node binary links libstdc++/libgcc; the upgrade picks up the patched
+FROM ghcr.io/home-assistant/base:3.24@sha256:58422480a299b16b6ea376c2167463206d430619ed02b40cd687c8bd6875519e
+# The node binary links libstdc++/libgcc (and libatomic since Node 26); the upgrade picks up the patched
 # ca-certificates (eMudhra roots) the pinned base predates.
-RUN apk add --no-cache libstdc++ libgcc && apk upgrade --no-cache ca-certificates ca-certificates-bundle
+RUN apk add --no-cache libstdc++ libgcc libatomic && apk upgrade --no-cache ca-certificates ca-certificates-bundle
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 
 # HA provides BUILD_ARCH (amd64 | aarch64 | armv7 | ...). Only amd64/aarch64 have
