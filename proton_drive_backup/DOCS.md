@@ -176,6 +176,8 @@ app asks for access to the Home Assistant API.)
   over the app's previous design.
 - The Web UI is reachable only through Home Assistant ingress — the app refuses
   requests from anything else on the internal add-on network.
+- The app runs under its own AppArmor profile (since 0.5.2): no mounts, no access
+  to other processes, and only the few root capabilities it needs.
 
 **What to be aware of:**
 
