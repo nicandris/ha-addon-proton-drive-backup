@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.2
+
+### Security
+
+- **The add-on now runs under its own AppArmor profile.** It keeps the file and
+  network access it needs (its `/data`, temporary staging, Proton and the
+  Supervisor) but can no longer mount filesystems, inspect other processes or use
+  root capabilities it never needed. Home Assistant's security rating goes from
+  7 to 8. If a sync or sign-in fails after updating, the host log
+  (**Settings → System → Logs → Host**) shows any blocked action as an
+  `apparmor="DENIED"` line; please open an issue with it.
+
 ## 0.5.1.2
 
 ### Changed

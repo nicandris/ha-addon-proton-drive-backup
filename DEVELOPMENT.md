@@ -582,6 +582,16 @@ option and not exported by `run.sh`) read directly by `orchestrator.tmpDir()` โ€
 it relocates the temp-`.tar` staging dir (ยง6); unset, it defaults to the
 container tmp dir.
 
+### AppArmor
+`proton_drive_backup/apparmor.txt` is the add-on's own profile (the Supervisor
+loads it and renames it to the installed slug; it is not part of the image). It
+gives the +1 that takes the HA security rating from 7 to 8. It is broad on purpose,
+`file, network, unix, signal`, so it cannot break a path or host the code adds
+later. What it confines is the rest: mount, ptrace of other processes, and every
+capability not listed. A new need (e.g. `net_bind_service`) shows up on the host
+as `apparmor="DENIED"` and needs a line there. Fedora has no AppArmor, so check
+syntax with `apparmor_parser -Q -K -T` in a Debian container.
+
 ### Versioning
 The version lives in exactly one place: `proton_drive_backup/config.yaml`'s
 `version:` field. `package.json` has no `version`; the `Dockerfile` has no
