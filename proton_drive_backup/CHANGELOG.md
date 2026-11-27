@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.2.2
+
+### Changed
+
+- The latest Home Assistant 3.24 base image (Proton Drive CLI stays at 0.9.0, still the current stable release).
+
 ## 0.5.2.1
 
 ### Changed
